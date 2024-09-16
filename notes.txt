@@ -1,0 +1,23 @@
+Here are the key performance-related resources in Kubernetes:
+
+CPU: Measured in cores, Kubernetes allows you to specify CPU limits and requests for each container. Requests guarantee a minimum CPU allocation, while limits prevent a container from using excessive CPU resources.
+
+Memory: Measured in bytes (e.g., MiB or GiB), memory requests and limits can be set per container. Kubernetes ensures containers do not exceed their memory limits to avoid out-of-memory (OOM) errors.
+
+Ephemeral Storage: Temporary disk space used by containers for things like caching. Kubernetes allows defining storage requests and limits, ensuring containers do not consume more than their fair share of disk space.
+
+Persistent Storage: Provides durable storage that can be attached to Pods, typically backed by a PersistentVolume. It's important for managing stateful workloads and their performance based on storage IOPS and throughput.
+
+Network Bandwidth: Though Kubernetes doesn't have built-in network throttling, performance can be managed by network policies, QoS (Quality of Service) classes, and service meshes, optimizing how traffic flows between Pods and services.
+
+Pod Priority and Preemption: Allows prioritization of Pods based on importance, where higher-priority Pods can preempt lower-priority ones if resources are scarce, ensuring critical workloads get necessary resources.
+
+Quality of Service (QoS) Class: Determines the priority of Pods in terms of resource allocation. Pods are classified into QoS levels (Guaranteed, Burstable, BestEffort) based on how their resource requests and limits are defined.
+
+Horizontal Pod Autoscaler (HPA): Automatically adjusts the number of Pods based on observed CPU or memory usage, helping to scale applications dynamically and maintain performance under varying load.
+
+Vertical Pod Autoscaler (VPA): Adjusts CPU and memory resource requests for Pods based on historical usage patterns. It ensures that each Pod has the optimal amount of resources to handle its workload efficiently.
+
+Node Resource Allocations: Kubernetes schedules Pods based on node capacity for CPU, memory, and storage, ensuring that each node operates within its performance limits and distributes load effectively across the cluster.
+
+These resources help manage, allocate, and optimize performance within Kubernetes clusters.
