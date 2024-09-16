@@ -53,3 +53,41 @@ Conclusion:
 If the ETL process is fully in-memory (processing and transformations occur in RAM), then 1GB of memory (or more) would suffice, and no PVC is needed.
 If the ETL process involves disk writes (temporary files, intermediate results, etc.), then you would need 1GB of storage in the form of a PVC or ephemeral storage like emptyDir, along with a reasonable amount of memory.
 The exact requirements depend on the ETL tool and how it handles the data during processing.
+
+
+
+
+
+
+Why CPU Is Important for Processing Large Chunks of Data:
+Data Computation:
+
+When processing large chunks of data (e.g., transformations, filtering, aggregations), the CPU handles the bulk of the computational work. A faster CPU or more CPU cores will reduce the time it takes to perform these operations, especially when dealing with computationally intensive tasks.
+Parallel Processing:
+
+For large datasets, parallel processing (utilizing multiple CPU cores) can significantly speed up operations. Many data processing frameworks (e.g., Apache Spark, Hadoop, or even Python multiprocessing) can take advantage of multiple cores to divide the data into smaller chunks and process them concurrently.
+Application Overhead:
+
+In addition to processing the data itself, the CPU also handles application logic, I/O operations, and system overhead. A higher CPU allocation ensures the system can efficiently handle all tasks without bottlenecks, especially when managing high throughput or intensive workloads.
+Efficiency in Handling Large Chunks:
+
+If you're processing data in large chunks, having sufficient CPU resources ensures that the data can be processed swiftly without slowing down or causing a backlog. CPU limits that are too low could lead to slower processing times or even failures in processing the data.
+Compression/Decompression:
+
+If the data is compressed or encrypted, the CPU is responsible for the decompression and encryption tasks, which can be CPU-intensive.
+CPU Allocation in Kubernetes Pods:
+In Kubernetes, you can set CPU requests and limits to ensure that a pod gets a guaranteed share of CPU resources on the node.
+
+CPU Requests: Minimum CPU resources that the pod will be allocated.
+CPU Limits: Maximum CPU resources the pod can use. If the pod exceeds this limit, it will be throttled, which can negatively impact performance.
+yaml
+Copy code
+resources:
+  requests:
+    cpu: "500m"  # Minimum of 0.5 CPU (500 millicores)
+  limits:
+    cpu: "2"     # Maximum of 2 CPUs
+When CPU Becomes Critical:
+Real-time data processing: If you're handling real-time streams or need low-latency processing, having enough CPU resources ensures the data is processed quickly.
+Large datasets: For batch jobs or chunk-based processing, a higher CPU allows you to process large volumes of data more quickly.
+Complex transformations: If your data processing includes heavy computations (e.g., machine learning models, data transformations), the CPU plays a significant role.
