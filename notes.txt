@@ -21,3 +21,35 @@ Vertical Pod Autoscaler (VPA): Adjusts CPU and memory resource requests for Pods
 Node Resource Allocations: Kubernetes schedules Pods based on node capacity for CPU, memory, and storage, ensuring that each node operates within its performance limits and distributes load effectively across the cluster.
 
 These resources help manage, allocate, and optimize performance within Kubernetes clusters.
+
+
+For a pod that needs to perform ETL (Extract, Transform, Load) operations on 1GB of data, whether you need 1GB of storage (such as a PVC) or 1GB of memory (RAM) depends on how the application processes the data. Here's how to approach it:
+
+1. In-Memory Processing (Memory Suffices)
+If your application processes the entire 1GB of data in memory (RAM) without writing it to disk during the ETL steps, then 1GB of memory (or slightly more) should suffice, and you would not require a PVC. However, it’s important to consider the following:
+
+Memory Overhead: Besides the 1GB of data, the application and the Kubernetes system itself will need memory, so the total memory allocation might need to be higher than 1GB (usually 1.2GB–1.5GB or more depending on overhead and complexity).
+Fast Processing: In-memory processing is typically faster since there is no I/O overhead associated with writing data to disk.
+In this case, you would only need to ensure that the pod is provisioned with sufficient RAM to handle the data and any processing overhead.
+
+2. Disk-Based Processing (Storage/PVC Needed)
+If your ETL application writes data to disk during the process (for intermediate results, temporary files, or the transformed output), you may need disk storage in the form of a PVC or ephemeral storage like emptyDir. Here's when this would be necessary:
+
+Intermediary Disk Writes: Some ETL tools write intermediate data to disk, especially when the data size exceeds available memory, or if the process involves sorting, temporary storage, or large joins.
+Output Storage: If the transformed data needs to be stored before being loaded into another system, you might need persistent storage like a PVC. However, if the data is loaded directly into a database or destination, storage may not be necessary.
+In this case, the pod would require:
+
+1GB (or more) of storage via a PVC for disk-based operations.
+Some amount of memory to handle processing, though potentially less than 1GB if most of the data is handled via disk.
+Scenarios:
+Scenario 1: In-Memory Processing (No PVC):
+Application loads, transforms, and moves data entirely in memory.
+You would need enough RAM to hold both the data (1GB) and the process overhead (e.g., 1.5GB total memory).
+No PVC is required unless you need to store the data persistently after transformation.
+Scenario 2: Disk-Based Processing (PVC Needed):
+If the application writes temporary or intermediate files during ETL, a PVC or ephemeral storage (e.g., emptyDir) is required.
+You would need at least 1GB of disk storage (more if the process writes extra data to disk), and the memory requirements could be lower (since the data is handled via disk).
+Conclusion:
+If the ETL process is fully in-memory (processing and transformations occur in RAM), then 1GB of memory (or more) would suffice, and no PVC is needed.
+If the ETL process involves disk writes (temporary files, intermediate results, etc.), then you would need 1GB of storage in the form of a PVC or ephemeral storage like emptyDir, along with a reasonable amount of memory.
+The exact requirements depend on the ETL tool and how it handles the data during processing.
