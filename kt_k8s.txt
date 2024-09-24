@@ -1,0 +1,76 @@
+In a Kubernetes cluster, there are two main types of components: Control Plane components and Worker Node components. Here's a breakdown of each:
+
+Control Plane Components
+These components manage the entire Kubernetes cluster and make decisions about scheduling, scaling, and monitoring the cluster state.
+
+API Server (kube-apiserver):
+
+Acts as the front-end for the Kubernetes control plane.
+Exposes the Kubernetes API, handling communication between components and external clients.
+
+Controller Manager (kube-controller-manager):
+
+Runs various controllers (e.g., Node Controller, Deployment Controller) that regulate the state of the cluster, ensuring the desired state matches the actual state.
+
+Scheduler (kube-scheduler):
+
+Assigns pods to worker nodes based on resource requirements and constraints, ensuring efficient use of resources.
+etcd:
+
+A key-value store that stores all the cluster data, serving as the Kubernetes "database."
+Ensures consistent storage of the cluster's configuration and state.
+
+Cloud Controller Manager (cloud-controller-manager):
+
+Interacts with the underlying cloud provider to manage resources (e.g., load balancers, storage) if running Kubernetes on a cloud infrastructure.
+This component is optional and only required in cloud-based deployments.
+
+
+Worker Node Components
+
+
+These components run the application workloads and report to the control plane.
+
+Kubelet (kubelet):
+
+An agent that runs on each worker node.
+Ensures that containers are running as expected by communicating with the API server and managing pod execution on the node.
+
+Kube-proxy (kube-proxy):
+
+Maintains network rules on each worker node to enable communication between pods and services, handling traffic routing within the cluster.
+Container Runtime (e.g., containerd, CRI-O, Docker):
+
+Responsible for running the actual containers that make up the pods.
+It interacts with the kubelet to start, stop, and manage containers.
+These components work together to ensure that the cluster functions correctly, with the control plane managing the overall state and the worker nodes running the actual application workloads.
+
+
+
+Orchestration in the context of containerized environments like Kubernetes refers to the automated coordination, management, and deployment of multiple containers that make up an application. It involves handling tasks such as scaling, networking, load balancing, and maintaining the desired state of applications. Orchestration ensures that containers are deployed to the right nodes, automatically restarts failed containers, and scales them up or down based on demand. By providing these capabilities, orchestration helps manage complex, distributed applications efficiently, ensuring high availability, fault tolerance, and optimal resource utilization across a cluster of servers. This automation reduces manual intervention, making it easier to manage and deploy applications in dynamic and large-scale environments.
+
+
+
+Pod
+A Pod is the smallest and simplest unit in Kubernetes, representing one or more containers that share the same network namespace, storage, and configuration. Pods are used to run application containers, and they provide an environment for containers to communicate and share resources.
+
+ReplicaSet
+A ReplicaSet ensures that a specified number of identical pod replicas are running at any given time. It automatically creates or deletes pods to maintain the desired number of replicas, ensuring high availability and scaling of applications.
+
+Deployment
+A Deployment is a higher-level Kubernetes object that manages ReplicaSets, providing declarative updates for pods and ReplicaSets. It offers features like rolling updates, rollbacks, and version control, making it easier to manage application updates and scaling over time.
+
+Difference between ReplicaSet and Deployment
+The key difference is that a ReplicaSet maintains the desired number of pod replicas, while a Deployment provides a higher level of control, allowing you to manage the lifecycle, updates, and rollbacks of your application. Deployments use ReplicaSets under the hood but add additional features for easier application management.
+
+StatefulSet
+A StatefulSet manages the deployment and scaling of pods that require stable, unique identities, persistent storage, and ordered deployment. It is used for stateful applications where pod identity and state need to be preserved, such as databases or clustered applications.
+
+DaemonSet
+A DaemonSet ensures that a specific pod runs on all (or selected) nodes in a Kubernetes cluster. It is typically used for system-level tasks such as log collection, monitoring, or network management, ensuring that these tasks are running across all nodes.
+
+Service
+A Service is an abstraction that defines a stable network endpoint to expose a set of pods, enabling communication within the cluster or with external clients. It provides load balancing and service discovery, allowing seamless access to pods even as they are created or deleted.
+
+Persistent Volume (PV)
+A Persistent Volume (PV) is a piece of storage in a Kubernetes cluster that has been provisioned by an administrator or dynamically by a StorageClass. It provides persistent storage that can be used by pods, allowing data to persist beyond the lifecycle of individual pods.
