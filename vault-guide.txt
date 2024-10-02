@@ -1,0 +1,166 @@
+Vault Integration with Kubernetes: Injecting Secrets into Pods
+This guide demonstrates how to set up Vault on Kubernetes using Helm, configure Vault to inject secrets into application pods, and access these secrets using the Vault Agent Sidecar Injector.
+
+Prerequisites
+
+A running Kubernetes cluster
+Helm installed
+kubectl and vault CLI tools installed
+
+Step 1: Install Vault with Helm
+First, install Vault using Helm and ensure the injector is enabled:
+
+helm repo add hashicorp https://helm.releases.hashicorp.com
+helm install vault hashicorp/vault --namespace vault --set "ui.enabled=true"
+
+
+
+kubectl exec -it vault-0 -n vault -- /bin/sh
+vault login <root_token>
+
+vault auth enable kubernetes
+
+/ $ vault operator init
+Unseal Key 1: <key>
+
+vault operator unseal
+
+
+Initial Root Token: <token>
+
+
+
+Step 2: Enable the KV Secrets Engine
+By default, Vault does not have the KV (Key-Value) secrets engine enabled. You need to enable it:
+
+
+vault secrets enable -path=secret kv
+This command enables the KV secrets engine at the secret/ path.
+
+
+vault kv put secret/myapp/database username=mani
+
+
+
+
+Step 4: Enable Kubernetes Authentication in Vault
+vault auth enable kubernetes
+
+
+Create vault sa secret 
+
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vault-sa-token  # The name of the token secret
+  annotations:
+    kubernetes.io/service-account.name: "vault"  # The service account name
+type: kubernetes.io/service-account-token
+
+Grab the token from the secret 
+
+Retrieve Kubernetes Service Account JWT, Host, and CA Certificate
+
+
+kubectl create token vault -n vault
+no need to decode the jwt token
+
+SA_JWT_TOKEN=$(kubectl get secret $(kubectl get serviceaccount vault -n vault -o jsonpath='{.secrets[0].name}') -n vault -o jsonpath='{.data.token}' | base64 --decode)
+K8S_HOST=$(kubectl config view --raw --minify --flatten --output 'jsonpath={.clusters[0].cluster.server}')
+K8S_CA_CERT=$(kubectl config view --raw --minify --flatten --output 'jsonpath={.clusters[0].cluster.certificate-authority-data}' | base64 --decode)
+
+
+export K8S_CA_CERT=''
+export SA_JWT_TOKEN=''
+export K8S_HOST=https://960dbdf6-5454-421f-9ae1-4ffbcecd7c59.k8s.ondigitalocean.com
+
+vault auth enable kubernetes
+
+vault write auth/kubernetes/config token_reviewer_jwt="$SA_JWT_TOKEN" kubernetes_host="$K8S_HOST" kubernetes_ca_cert="$K8S_CA_CERT"
+
+
+Step 5: Create a Policy for Accessing the Secret
+Define a policy that grants read access to the secret:
+
+
+
+vault policy write myapp-policy -<<EOF
+path "secret/myapp/database" {
+  capabilities = ["read"]
+}
+EOF
+
+
+vault policy write monitoring-policy -<<EOF
+path "secret/myapp/monitoring" {
+  capabilities = ["read"]
+}
+EOF
+
+Step 6: Create a Kubernetes Authentication Role in Vault
+Create a Vault role that binds the Kubernetes service account to the Vault policy:
+
+
+
+vault write auth/kubernetes/role/myapp-role \
+    bound_service_account_names=myapp-sa \
+    bound_service_account_namespaces=myapp \
+    policies=myapp-policy \
+    ttl=24h
+
+
+
+vault write auth/kubernetes/role/myapp-monitoring-role \
+    bound_service_account_names=myapp-sa \
+    bound_service_account_namespaces=myapp \
+    policies=monitoring-policy \
+    ttl=24h
+
+Step 7: Annotate Your Application Pod for Secret Injection
+Annotate your application pod to enable the Vault Agent Injector and specify the secrets path:
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp
+  namespace: myapp
+  annotations:
+    vault.hashicorp.com/agent-inject: "true"
+    vault.hashicorp.com/role: "myapp-role"
+    vault.hashicorp.com/agent-inject-secret-config: "secret/myapp/database"
+spec:
+  serviceAccountName: myapp-sa
+  containers:
+    - name: myapp
+      image: nginx
+      ports:
+        - containerPort: 80
+
+
+
+Step 8: Deploy the Pod
+Deploy your pod using kubectl:
+
+
+kubectl apply -f myapp-pod.yaml
+Verification
+Confirm that the Vault Agent sidecar has been injected by inspecting the pod:
+
+
+kubectl describe pod myapp
+kubectl exec -it myapp -n myapp -- /bin/sh
+Check the injected secrets at /vault/secrets/config inside your application container.
+
+
+
+vault read auth/kubernetes/role/myapp-role
+vault policy read myapp-policy
+
+
+Summary
+Installed Vault via Helm and enabled the KV secrets engine.
+Configured Kubernetes authentication in Vault.
+Created a Vault policy and role to grant access.
+Annotated the pod for secret injection using Vault Agent Injector.
+This setup allows your application pods to securely access secrets managed by Vault using Kubernetes-native workflows.
