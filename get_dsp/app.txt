@@ -34,3 +34,47 @@ def trigger():
         return f"<pre>{result.decode()}</pre>"
     except subprocess.CalledProcessError as e:
         return f"<pre>Failed:\n{e.output.decode()}</pre>", 500
+
+
+------
+
+from flask import Flask, request, send_from_directory, render_template_string
+
+app = Flask(__name__)
+
+AUTH_PASSWORD = "supersecret"  # Hardcoded password
+
+MATCH_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head><title>Match</title></head>
+<body>
+  <h2>✅ Password is a match</h2>
+  <a href="/">Go back</a>
+</body>
+</html>
+"""
+
+NO_MATCH_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head><title>No Match</title></head>
+<body>
+  <h2>❌ Password is incorrect</h2>
+  <a href="/">Try again</a>
+</body>
+</html>
+"""
+
+@app.route('/')
+def form():
+    return send_from_directory('.', 'index.html')
+
+@app.route('/trigger', methods=['POST'])
+def trigger():
+    password = request.form.get('password')
+
+    if password == AUTH_PASSWORD:
+        return render_template_string(MATCH_TEMPLATE)
+    else:
+        return render_template_string(NO_MATCH_TEMPLATE), 403
