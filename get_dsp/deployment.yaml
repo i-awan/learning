@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: curl-trigger
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: curl-trigger
+  template:
+    metadata:
+      labels:
+        app: curl-trigger
+    spec:
+      containers:
+        - name: curl-trigger
+          image: your-dockerhub/curl-trigger:latest
+          ports:
+            - containerPort: 3000
