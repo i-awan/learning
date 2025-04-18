@@ -1,0 +1,38 @@
+from airflow import DAG
+from airflow.operators.dummy_operator import DummyOperator
+from airflow.operators.python_operator import PythonOperator
+from datetime import datetime
+
+# Function to be executed by Task 1
+def task_1_function():
+    print("Task 1 is running")
+
+# Function to be executed by Task 2
+def task_2_function():
+    print("Task 2 is running")
+
+# Define the DAG
+dag = DAG(
+    'simple_task_dependency',
+    description='A simple DAG with two tasks where Task 2 depends on Task 1',
+    schedule_interval=None,  # Manual trigger
+    start_date=datetime(2025, 2, 7),
+    catchup=False
+)
+
+# Define Task 1 (DummyOperator can be replaced with PythonOperator for actual tasks)
+task_1 = PythonOperator(
+    task_id='task_1',
+    python_callable=task_1_function,
+    dag=dag
+)
+
+# Define Task 2 (this will run after Task 1)
+task_2 = PythonOperator(
+    task_id='task_2',
+    python_callable=task_2_function,
+    dag=dag
+)
+
+# Set the task dependencies (Task 2 will depend on Task 1)
+task_1 >> task_2

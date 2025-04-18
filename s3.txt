@@ -1,0 +1,30 @@
+import boto3
+
+# AWS credentials (Replace with your actual credentials)
+AWS_ACCESS_KEY = "your-access-key"
+AWS_SECRET_KEY = "your-secret-key"
+AWS_REGION = "your-region"  # e.g., "us-east-1"
+
+def list_s3_buckets():
+    try:
+        # Create S3 client with embedded credentials
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=AWS_ACCESS_KEY,
+            aws_secret_access_key=AWS_SECRET_KEY,
+            region_name=AWS_REGION
+        )
+
+        # List buckets
+        response = s3_client.list_buckets()
+
+        # Print bucket names
+        print("S3 Buckets:")
+        for bucket in response['Buckets']:
+            print(f"- {bucket['Name']}")
+
+    except Exception as e:
+        print(f"Error: {e}")
+
+if __name__ == "__main__":
+    list_s3_buckets()

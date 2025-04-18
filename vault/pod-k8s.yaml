@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kubectl-pod
+spec:
+  serviceAccountName: vault  # The service account to use
+  containers:
+    - name: kubectl-container
+      image: bitnami/kubectl:latest  # Using Bitnami's kubectl image
+      command: ["sleep", "infinity"] # Keeps the container running
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "250m"
+        limits:
+          memory: "128Mi"
+          cpu: "500m"

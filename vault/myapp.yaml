@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp
+  namespace: myapp  # Ensure this matches the namespace where your SA is created
+  annotations:
+    vault.hashicorp.com/agent-inject: "true"
+    vault.hashicorp.com/role: "myapp-role"
+    vault.hashicorp.com/agent-inject-secret-config: "secret/myapp/database"
+spec:
+  serviceAccountName: myapp-sa
+  containers:
+    - name: myapp
+      image: nginx
+      ports:
+        - containerPort: 80

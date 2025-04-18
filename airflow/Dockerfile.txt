@@ -1,0 +1,36 @@
+# Use an official Python base image
+FROM python:3.9-slim
+
+# Set environment variables for proxy (if needed)
+ARG HTTP_PROXY=http://your-proxy:port
+ARG HTTPS_PROXY=http://your-proxy:port
+ARG NO_PROXY=localhost,127.0.0.1
+
+ENV http_proxy=${HTTP_PROXY}
+ENV https_proxy=${HTTPS_PROXY}
+ENV no_proxy=${NO_PROXY}
+
+# Set Nexus repository URL
+ARG NEXUS_REPO_URL=https://nexus.example.com/repository/pypi/simple
+
+# Install required system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set the working directory
+WORKDIR /app
+
+# Copy the requirements file (make sure it references boto3 from Nexus)
+COPY requirements.txt .
+
+# Upgrade pip and configure Nexus as the PyPi index
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir --index-url ${NEXUS_REPO_URL} -r requirements.txt
+
+# Copy application files
+COPY . .
+
+# Set entrypoint command (modify as needed)
+CMD ["python", "app.py"]
