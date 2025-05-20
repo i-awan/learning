@@ -78,3 +78,34 @@ def trigger():
         return render_template_string(MATCH_TEMPLATE)
     else:
         return render_template_string(NO_MATCH_TEMPLATE), 403
+
+
+
+- name: Upload file to S3 using a pre-signed URL
+  ansible.builtin.uri:
+    url: "https://your-s3-endpoint.com/my-bucket/myfile.txt?AWSAccessKeyId=...&Signature=..."
+    method: PUT
+    src: "/path/to/myfile.txt"
+    headers:
+      Content-Type: "application/octet-stream"
+
+
+import boto3
+
+s3 = boto3.client(
+    's3',
+    endpoint_url='https://your-s3-endpoint.com',
+    aws_access_key_id='YOUR_ACCESS_KEY',
+    aws_secret_access_key='YOUR_SECRET_KEY',
+)
+
+url = s3.generate_presigned_url(
+    ClientMethod='put_object',
+    Params={
+        'Bucket': 'my-bucket',
+        'Key': 'myfile.txt',
+    },
+    ExpiresIn=3600  # URL valid for 1 hour
+)
+
+print(url)
