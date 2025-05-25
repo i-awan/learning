@@ -28,6 +28,28 @@ for pdf_file in pdf_files:
 ------------------------------
 
 
+api_url = "https://api.example.com/upload"
+access_token = "YOUR_ACCESS_TOKEN_HERE"
+
+curl_command = (
+    f"curl -X POST {api_url} "
+    f"-H \"Authorization: Bearer {access_token}\" "
+    f"-H \"Content-Type: application/json\" "
+    f"--data '{{"
+    f"\"inputFiles\": {{"
+    f"\"dataset_id\": {{\"path\": \"/path/input.sqlite\", \"versionId\": \"dsafadf\"}}, "
+    f"\"rules_id\": {{\"path\": \"/path/rule.sqlite\", \"versionId\": \"w342sadf\"}}"
+    f"}}"
+    f"}}'"
+)
+
+print(curl_command)
+
+
+
+
+
+
 import boto3
 
 # AWS credentials (Replace with your actual credentials)
