@@ -1,3 +1,33 @@
+import os
+
+# Configuration
+folder_path = "/path/to/pdf/folder"
+api_url = "https://api.example.com/upload"
+access_token = "YOUR_ACCESS_TOKEN_HERE"
+
+# Loop through the folder and get all PDF files
+pdf_files = [f for f in os.listdir(folder_path) if f.lower().endswith(".pdf")]
+
+# Generate curl commands
+for pdf_file in pdf_files:
+    full_path = os.path.join(folder_path, pdf_file)
+    
+    curl_command = f"""curl -X POST {api_url} \\
+  -H "Authorization: Bearer {access_token}" \\
+  -H "Content-Type: application/json" \\
+  -d '{{"file_path": "{full_path}"}}'"""
+
+    print(curl_command)
+    print()  # Add spacing between commands
+
+
+
+
+
+
+------------------------------
+
+
 import boto3
 
 # AWS credentials (Replace with your actual credentials)
