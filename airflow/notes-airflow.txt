@@ -48,3 +48,33 @@ helm upgrade --install airflow apache-airflow/airflow -n airflow -f values.yaml 
 
 kubectl create secret generic airflow-ssh-git-secret --from-file=gitSshKey=~/.ssh/id_rsa -n airflow 
 
+
+
+import requests
+import re
+
+# URL and credentials
+url = "https://example.com/protected/resource"
+username = "your_username"
+password = "your_password"
+
+# Make the request with basic auth
+response = requests.get(url, auth=(username, password))
+
+# Check for success
+if response.status_code == 200:
+    content = response.text
+
+    # Example: Extract something with regex (adjust pattern as needed)
+    pattern = r"YourToken: (\w+)"
+    match = re.search(pattern, content)
+    
+    if match:
+        extracted_value = match.group(1)
+        print("Extracted value:", extracted_value)
+    else:
+        print("Pattern not found in response.")
+else:
+    print(f"Request failed with status code {response.status_code}")
+
+
