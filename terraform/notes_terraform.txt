@@ -1,0 +1,127 @@
+eks.tf 
+
+
+(1) Calling script (sgp-deployment) should be outside of modules folder 
+
+(2) cluster_endpoint_public_access = true with no CIDR restrictions.
+
+Use endpoint where endpoint service resolves to a load balancer sitting in front of private cluster endpoint
+
+
+(3) CNI permissions: move to IRSA (not node role)
+
+ ttaching AmazonEKS_CNI_Policy to the node IAM role. That’s legacy and overly permissive.
+
+With the vpc-cni add-on, use IRSA for its service account instead and remove the CNI policy from the node role.
+
+cluster_addons = {
+  vpc-cni = {
+    most_recent          = true
+    service_account_role_arn = module.cni_irsa.iam_role_arn
+  }
+  # ...
+}
+
+# Create IRSA (example)
+module "cni_irsa" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+  version = "~> 5.0"
+
+  role_name_prefix = "${local.prefix}-cni-"
+  attach_vpc_cni_policy = true
+
+  oidc_providers = {
+    ex = {
+      provider_arn = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:aws-node"]
+    }
+  }
+}
+
+
+…and then drop "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy" from the node role attachments.
+
+
+(4) ECR pull-through action on nodes
+
+This custom policy grants ecr:BatchImportUpstreamImage to worker nodes. That’s a control-plane/registry admin action for pull-through caches,
+ not needed for pulling images. It’s also very broad (Resource":"*").
+
+Remove it from the node role. Nodes only need AmazonEC2ContainerRegistryReadOnly (which you already attach).
+
+
+
+(5) Add-on pinning
+
+most_recent = true can silently drift add-ons and break compatibility during cluster patching.
+
+Pin explicit versions that match your Kubernetes minor and upgrade them deliberately.
+
+cluster_addons = {
+  coredns   = { addon_version = "v1.11.1-eksbuild.1" }     # example
+  kube-proxy= { addon_version = "v1.30.0-eksbuild.2" }     # example
+  vpc-cni   = { addon_version = "v1.16.4-eksbuild.1" }     # example
+  aws-ebs-csi-driver = {
+    addon_version = "v1.31.0-eksbuild.1"
+    service_account_role_arn = module.ebs_csi_irsa.iam_role_arn
+  }
+}
+
+
+
+(6) Secrets encryption + control plane logs
+
+Turn on envelope encryption and log the control plane; they’re low effort, high value.
+
+cluster_encryption_config = [{
+  resources = ["secrets"]
+  provider_key_arn = aws_kms_key.eks_secrets.arn
+}]
+
+
+(7) Taints for “system” nodes
+
+The CriticalAddonsOnly=true:NoSchedule pattern is legacy. Modern Kubernetes prefers PriorityClasses (system-node-critical, system-cluster-critical) + your own explicit taints/tolerations.
+
+If you keep taints, define a custom, meaningful one and ensure your system charts tolerate it.
+
+taints = {
+  "system-only" = {
+    key    = "node-purpose"
+    value  = "system"
+    effect = "NO_SCHEDULE"
+  }
+}
+
+
+(8) Security groups
+
+The custom node SG rule opens 30443 from workspace_lb_sg. If that’s a NodePort, be sure the service really uses that port and that network path is intended. Prefer the AWS Load Balancer Controller + target groups instead of NodePort for production ingress.
+
+
+Add modules for cluster-autoscaler, aws-load-balancer-controller, external-dns, metrics-server via IRSA.
+
+If you run workloads needing EFS, add the EFS CSI with IRSA too.
+
+Consider managed node group with spot for non-critical pools.
+
+
+
+#######################################
+
+lb.tf 
+
+You’re attaching the ALB Target Group to node-group ASGs.
+
+That registers instances (nodes) as targets on port 30443. It can work for a NodePort-based ingress, but:
+
+It won’t include Karpenter nodes (they aren’t in those ASGs), so new Karpenter capacity won’t receive traffic.
+
+It’s fragile for rolling upgrades (ASG replacements), and you’re bypassing the AWS Load Balancer Controller’s pod/IP targeting and health checks.
+
+Recommendation: Prefer the AWS Load Balancer Controller with a Service/Ingress of type LoadBalancer (ALB, targetType: ip). Karpenter + ALB Controller is the modern, resilient combo.
+If you must stick with NodePort → ALB(instance), consider moving to a single ASG or dynamically registering instances (not ASG-level attachment), and ensure Karpenter-launched instances are also registered.
+
+
+
+
