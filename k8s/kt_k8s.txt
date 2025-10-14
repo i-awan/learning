@@ -1,3 +1,58 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vault-to-k8s-secret-once
+  namespace: default
+spec:
+  backoffLimit: 1                 # retry once on failure
+  ttlSecondsAfterFinished: 3600   # auto-clean up 1 hour after completion (optional)
+  template:
+    metadata:
+      labels:
+        app: vault-to-k8s-secret
+      annotations:
+        # Vault Agent Injector: writes /vault/secrets/test
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "myapp-role"
+        vault.hashicorp.com/agent-inject-secret-test: "secret/data/myapp"
+        vault.hashicorp.com/agent-inject-template-test: |
+          {{- with secret "secret/data/myapp" -}}
+          {{- range $k, $v := .Data.data }}
+          {{ $k }} = {{ $v }}
+          {{- end -}}
+          {{- end -}}
+    spec:
+      serviceAccountName: secret-writer-sa   # needs create/patch/get on secrets
+      restartPolicy: Never
+      volumes:
+        - name: tools
+          configMap:
+            name: secret-from-file-bin      # contains create_secret_from_file.sh
+            defaultMode: 0755
+      containers:
+        - name: run-once
+          image: bitnami/kubectl:1.30
+          volumeMounts:
+            - name: tools
+              mountPath: /app/bin
+              readOnly: true
+          env:
+            - name: SECRET_FILE
+              value: "/vault/secrets/test"
+            - name: SECRET_NAME
+              value: "vault-converted-secrets"
+            - name: SECRET_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: SECRET_TYPE
+              value: "Opaque"
+          command: ["/bin/sh","-c"]
+          args:
+            - |
+              /app/bin/create_secret_from_file.sh
+
+
 apiVersion: v1
 kind: ConfigMap
 metadata:
