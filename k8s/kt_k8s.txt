@@ -1,3 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# --- Config (override via env) ---
+SECRET_FILE="${SECRET_FILE:-/vault/secrets/test}"
+SECRET_NAME="${SECRET_NAME:-vault-converted-secrets}"
+SECRET_NAMESPACE="${SECRET_NAMESPACE:-default}"
+SECRET_TYPE="${SECRET_TYPE:-Opaque}"
+
+# --- Quick checks ---
+[[ -f "$SECRET_FILE" ]] || { echo "[ERROR] $SECRET_FILE not found"; exit 1; }
+
+# --- Build --from-literal args from KEY=VALUE lines ---
+literals=()
+while IFS= read -r raw || [[ -n "${raw:-}" ]]; do
+  # skip empty lines / comments
+  [[ -z "${raw//[[:space:]]/}" ]] && continue
+  [[ "$raw" =~ ^[[:space:]]*# ]] && continue
+  [[ "$raw" != *"="* ]] && continue
+
+  key="${raw%%=*}"
+  val="${raw#*=}"
+
+  # trim surrounding whitespace
+  key="$(echo "$key" | xargs)"
+  val="$(echo "$val" | xargs)"
+
+  # strip matching surrounding quotes in value (optional)
+  if [[ ${#val} -ge 2 ]]; then
+    if [[ "${val:0:1}" == '"' && "${val: -1}" == '"' ]] || [[ "${val:0:1}" == "'" && "${val: -1}" == "'" ]]; then
+      val="${val:1:${#val}-2}"
+    fi
+  fi
+
+  [[ -z "$key" ]] && continue
+  # Note: this simple script assumes single-line values.
+  literals+=("--from-literal=${key}=${val}")
+done < "$SECRET_FILE"
+
+[[ ${#literals[@]} -gt 0 ]] || { echo "[ERROR] No KEY=VALUE pairs found in $SECRET_FILE"; exit 2; }
+
+# --- Create/Update the Secret ---
+kubectl -n "$SECRET_NAMESPACE" create secret generic "$SECRET_NAME" \
+  "${literals[@]}" \
+  --type="$SECRET_TYPE" \
+  --dry-run=client -o yaml \
+| kubectl -n "$SECRET_NAMESPACE" apply -f -
+
+echo "[OK] Secret '$SECRET_NAME' applied in namespace '$SECRET_NAMESPACE'."
+
+
+
 apiVersion: v1
 kind: ServiceAccount
 metadata:
