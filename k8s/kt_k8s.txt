@@ -204,6 +204,7 @@ templates/job.yaml
 
 {{- $fullname := include "vault2secret.fullname" . -}}
 {{- range $i, $job := .Values.jobs }}
+---
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -212,7 +213,6 @@ metadata:
   labels:
     app.kubernetes.io/name: {{ include "vault2secret.name" $ }}
     app.kubernetes.io/instance: {{ $.Release.Name }}
-    app.kubernetes.io/component: vault-to-k8s-secret
 spec:
   backoffLimit: {{ default 1 $job.backoffLimit }}
   {{- if $job.ttlSecondsAfterFinished }}
@@ -225,16 +225,15 @@ spec:
         app.kubernetes.io/instance: {{ $.Release.Name }}
         job: {{ $job.name }}
       annotations:
-        # Vault Agent Injector annotations per job/path
         vault.hashicorp.com/agent-inject: "true"
         vault.hashicorp.com/role: "{{ $.Values.vault.role }}"
         vault.hashicorp.com/agent-inject-secret-{{ $job.fileName | default "test" }}: "{{ $job.vaultPath }}"
         vault.hashicorp.com/agent-inject-template-{{ $job.fileName | default "test" }}: |
-          {{- "{{- with secret \"" -}}{{ $job.vaultPath }}{{ "\" -}}" }}
-          {{- "{{- range $k, $v := .Data.data }}" }}
-          {{- "{{$k}} = {{$v}}" }}
-          {{- "{{- end }}" }}
-          {{- "{{- end }}" }}
+          {{`{{- with secret "`}}{{ $job.vaultPath }}{{`" -}}`}}
+          {{`{{- range $k, $v := .Data.data }}`}}
+          {{`{{$k}} = {{$v}}`}}
+          {{`{{- end }}`}}
+          {{`{{- end }}`}}
     spec:
       serviceAccountName: {{ include "vault2secret.serviceAccountName" $ }}
       restartPolicy: Never
@@ -262,21 +261,9 @@ spec:
                   fieldPath: metadata.namespace
             - name: SECRET_TYPE
               value: "{{ default "Opaque" $job.secretType }}"
-            # Optional: pass labels/annotations for the K8s Secret
-            {{- if $job.secretLabels }}
-            - name: SECRET_LABELS_JSON
-              value: {{ $job.secretLabels | toJson | quote }}
-            {{- end }}
-            {{- if $job.secretAnnotations }}
-            - name: SECRET_ANNOTATIONS_JSON
-              value: {{ $job.secretAnnotations | toJson | quote }}
-            {{- end }}
           command: ["/bin/sh","-c"]
-          args:
-            - /app/bin/create_secret_from_file.sh
----
+          args: ["/app/bin/create_secret_from_file.sh"]
 {{- end }}
-
 
 
 
