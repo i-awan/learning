@@ -1,3 +1,296 @@
+chart.yaml 
+
+apiVersion: v2
+name: vault-to-k8s-secret
+description: Create one-shot Jobs that read Vault-injected files and upsert K8s Secrets
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+
+
+values.yaml 
+
+image:
+  repository: bitnami/kubectl
+  tag: "1.30"
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  name: ""  # leave empty to use release-based name
+
+rbac:
+  create: true
+
+vault:
+  role: "myapp-role"  # Vault role for injector
+
+# One Job is rendered per item below
+jobs:
+  - name: myapp
+    vaultPath: "secret/data/myapp"          # Vault path to fetch
+    fileName: "test"                        # resulting filename at /vault/secrets/<fileName>
+    k8sSecretName: "vault-converted-secrets"
+    secretType: "Opaque"
+    # Optional Secret labels/annotations (applied to the K8s Secret, not the Job)
+    secretLabels: {}
+    secretAnnotations: {}
+    backoffLimit: 1
+    ttlSecondsAfterFinished: 3600
+
+  # Example of another one
+  # - name: payments
+  #   vaultPath: "secret/data/payments"
+  #   fileName: "payvars"
+  #   k8sSecretName: "payments-secrets"
+  #   secretType: "Opaque"
+  #   backoffLimit: 2
+  #   ttlSecondsAfterFinished: 600
+
+
+templates/_helpers.tpl 
+
+{{- define "vault2secret.name" -}}
+{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
+{{- end }}
+
+{{- define "vault2secret.fullname" -}}
+{{- if .Values.fullnameOverride -}}
+{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- $name := include "vault2secret.name" . -}}
+{{- if contains $name .Release.Name -}}
+{{- .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{- define "vault2secret.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create -}}
+{{- if .Values.serviceAccount.name -}}
+{{ .Values.serviceAccount.name }}
+{{- else -}}
+{{ include "vault2secret.fullname" . }}
+{{- end -}}
+{{- else -}}
+{{- default "default" .Values.serviceAccount.name -}}
+{{- end -}}
+{{- end }}
+
+
+templates/configmap-script.yaml
+
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vault2secret.fullname" . }}-bin
+  namespace: {{ .Release.Namespace }}
+data:
+  create_secret_from_file.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    SECRET_FILE="${SECRET_FILE:-/vault/secrets/test}"
+    SECRET_NAME="${SECRET_NAME:-vault-converted-secrets}"
+    SECRET_NAMESPACE="${SECRET_NAMESPACE:-default}"
+    SECRET_TYPE="${SECRET_TYPE:-Opaque}"
+    SECRET_LABELS_JSON="${SECRET_LABELS_JSON:-{}}"
+    SECRET_ANNOTATIONS_JSON="${SECRET_ANNOTATIONS_JSON:-{}}"
+
+    # Helpers: trim without xargs, safe for unmatched quotes
+    trim() { sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' ; }
+    strip_quotes_if_paired() {
+      local s="$1"; local len=${#s}
+      if (( len >= 2 )); then
+        local first="${s:0:1}"; local last="${s: -1}"
+        if { [[ "$first" == '"' && "$last" == '"' ]] || [[ "$first" == "'" && "$last" == "'" ]]; }; then
+          printf '%s' "${s:1:len-2}"; return
+        fi
+      fi
+      printf '%s' "$s"
+    }
+
+    [[ -f "$SECRET_FILE" ]] || { echo "[ERROR] $SECRET_FILE not found"; exit 1; }
+
+    # Build --from-literal args (single-line values)
+    literals=()
+    while IFS= read -r raw || [[ -n "${raw:-}" ]]; do
+      raw="${raw%$'\r'}"
+      [[ -z "${raw//[[:space:]]/}" ]] && continue
+      [[ "$raw" =~ ^[[:space:]]*# ]] && continue
+      [[ "$raw" != *"="* ]] && continue
+
+      key="${raw%%=*}"
+      val="${raw#*=}"
+
+      key="$(printf '%s' "$key" | trim)"
+      val="$(printf '%s' "$val" | trim)"
+      val="$(strip_quotes_if_paired "$val")"
+      [[ -z "$key" ]] && continue
+      literals+=("--from-literal=${key}=${val}")
+    done < "$SECRET_FILE"
+
+    [[ ${#literals[@]} -gt 0 ]] || { echo "[ERROR] No KEY=VALUE pairs found in $SECRET_FILE"; exit 2; }
+
+    # Create a base Secret YAML via dry-run
+    tmp="$(mktemp)"
+    kubectl -n "$SECRET_NAMESPACE" create secret generic "$SECRET_NAME" \
+      "${literals[@]}" \
+      --type="$SECRET_TYPE" \
+      --dry-run=client -o yaml > "$tmp"
+
+    # Merge labels/annotations (optional)
+    # Note: use kubectl patch style by generating new metadata if provided
+    if [[ "$SECRET_LABELS_JSON" != "{}" || "$SECRET_ANNOTATIONS_JSON" != "{}" ]]; then
+      # Convert JSON maps to YAML under metadata
+      python3 - "$tmp" <<'PY' || true
+import os, sys, json, yaml
+p = sys.argv[1]
+with open(p) as f:
+    obj = yaml.safe_load(f)
+labels = json.loads(os.environ.get("SECRET_LABELS_JSON","{}"))
+annos = json.loads(os.environ.get("SECRET_ANNOTATIONS_JSON","{}"))
+obj.setdefault("metadata",{})
+if labels:
+    obj["metadata"].setdefault("labels",{}).update({str(k):str(v) for k,v in labels.items()})
+if annos:
+    obj["metadata"].setdefault("annotations",{}).update({str(k):str(v) for k,v in annos.items()})
+with open(p,"w") as f:
+    yaml.safe_dump(obj, f, sort_keys=False)
+PY
+    fi
+
+    cat "$tmp" | kubectl -n "$SECRET_NAMESPACE" apply -f -
+    rm -f "$tmp"
+    echo "[OK] Secret '$SECRET_NAME' applied in namespace '$SECRET_NAMESPACE'."
+
+
+
+templates/rbac.yaml
+
+
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "vault2secret.fullname" . }}-secret-writer
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get","list","create","update","patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "vault2secret.fullname" . }}-secret-writer
+  namespace: {{ .Release.Namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "vault2secret.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "vault2secret.fullname" . }}-secret-writer
+{{- end }}
+
+
+templates/job.yaml 
+
+{{- $fullname := include "vault2secret.fullname" . -}}
+{{- range $i, $job := .Values.jobs }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-%s" $fullname $job.name | trunc 63 | trimSuffix "-" }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "vault2secret.name" $ }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: vault-to-k8s-secret
+spec:
+  backoffLimit: {{ default 1 $job.backoffLimit }}
+  {{- if $job.ttlSecondsAfterFinished }}
+  ttlSecondsAfterFinished: {{ $job.ttlSecondsAfterFinished }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "vault2secret.name" $ }}
+        app.kubernetes.io/instance: {{ $.Release.Name }}
+        job: {{ $job.name }}
+      annotations:
+        # Vault Agent Injector annotations per job/path
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "{{ $.Values.vault.role }}"
+        vault.hashicorp.com/agent-inject-secret-{{ $job.fileName | default "test" }}: "{{ $job.vaultPath }}"
+        vault.hashicorp.com/agent-inject-template-{{ $job.fileName | default "test" }}: |
+          {{- "{{- with secret \"" -}}{{ $job.vaultPath }}{{ "\" -}}" }}
+          {{- "{{- range $k, $v := .Data.data }}" }}
+          {{- "{{$k}} = {{$v}}" }}
+          {{- "{{- end }}" }}
+          {{- "{{- end }}" }}
+    spec:
+      serviceAccountName: {{ include "vault2secret.serviceAccountName" $ }}
+      restartPolicy: Never
+      volumes:
+        - name: tools
+          configMap:
+            name: {{ include "vault2secret.fullname" $ }}-bin
+            defaultMode: 0755
+      containers:
+        - name: run-{{ $job.name }}
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          volumeMounts:
+            - name: tools
+              mountPath: /app/bin
+              readOnly: true
+          env:
+            - name: SECRET_FILE
+              value: "/vault/secrets/{{ $job.fileName | default "test" }}"
+            - name: SECRET_NAME
+              value: "{{ $job.k8sSecretName }}"
+            - name: SECRET_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: SECRET_TYPE
+              value: "{{ default "Opaque" $job.secretType }}"
+            # Optional: pass labels/annotations for the K8s Secret
+            {{- if $job.secretLabels }}
+            - name: SECRET_LABELS_JSON
+              value: {{ $job.secretLabels | toJson | quote }}
+            {{- end }}
+            {{- if $job.secretAnnotations }}
+            - name: SECRET_ANNOTATIONS_JSON
+              value: {{ $job.secretAnnotations | toJson | quote }}
+            {{- end }}
+          command: ["/bin/sh","-c"]
+          args:
+            - /app/bin/create_secret_from_file.sh
+---
+{{- end }}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 apiVersion: batch/v1
 kind: Job
 metadata:
