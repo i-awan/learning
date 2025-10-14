@@ -1,53 +1,119 @@
-#!/usr/bin/env bash
-set -euo pipefail
+# 1) ConfigMap: ship the bash script
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: secret-from-file-bin
+  namespace: default
+data:
+  create_secret_from_file.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
 
-# --- Config (override via env) ---
-SECRET_FILE="${SECRET_FILE:-/vault/secrets/test}"
-SECRET_NAME="${SECRET_NAME:-vault-converted-secrets}"
-SECRET_NAMESPACE="${SECRET_NAMESPACE:-default}"
-SECRET_TYPE="${SECRET_TYPE:-Opaque}"
+    SECRET_FILE="${SECRET_FILE:-/vault/secrets/test}"
+    SECRET_NAME="${SECRET_NAME:-vault-converted-secrets}"
+    SECRET_NAMESPACE="${SECRET_NAMESPACE:-default}"
+    SECRET_TYPE="${SECRET_TYPE:-Opaque}"
 
-# --- Quick checks ---
-[[ -f "$SECRET_FILE" ]] || { echo "[ERROR] $SECRET_FILE not found"; exit 1; }
+    [[ -f "$SECRET_FILE" ]] || { echo "[ERROR] $SECRET_FILE not found"; exit 1; }
 
-# --- Build --from-literal args from KEY=VALUE lines ---
-literals=()
-while IFS= read -r raw || [[ -n "${raw:-}" ]]; do
-  # skip empty lines / comments
-  [[ -z "${raw//[[:space:]]/}" ]] && continue
-  [[ "$raw" =~ ^[[:space:]]*# ]] && continue
-  [[ "$raw" != *"="* ]] && continue
+    literals=()
+    while IFS= read -r raw || [[ -n "${raw:-}" ]]; do
+      [[ -z "${raw//[[:space:]]/}" ]] && continue
+      [[ "$raw" =~ ^[[:space:]]*# ]] && continue
+      [[ "$raw" != *"="* ]] && continue
 
-  key="${raw%%=*}"
-  val="${raw#*=}"
+      key="${raw%%=*}"
+      val="${raw#*=}"
 
-  # trim surrounding whitespace
-  key="$(echo "$key" | xargs)"
-  val="$(echo "$val" | xargs)"
+      key="$(echo "$key" | xargs)"
+      val="$(echo "$val" | xargs)"
 
-  # strip matching surrounding quotes in value (optional)
-  if [[ ${#val} -ge 2 ]]; then
-    if [[ "${val:0:1}" == '"' && "${val: -1}" == '"' ]] || [[ "${val:0:1}" == "'" && "${val: -1}" == "'" ]]; then
-      val="${val:1:${#val}-2}"
-    fi
-  fi
+      if [[ ${#val} -ge 2 ]]; then
+        if [[ "${val:0:1}" == '"' && "${val: -1}" == '"' ]] || [[ "${val:0:1}" == "'" && "${val: -1}" == "'" ]]; then
+          val="${val:1:${#val}-2}"
+        fi
+      fi
 
-  [[ -z "$key" ]] && continue
-  # Note: this simple script assumes single-line values.
-  literals+=("--from-literal=${key}=${val}")
-done < "$SECRET_FILE"
+      [[ -z "$key" ]] && continue
 
-[[ ${#literals[@]} -gt 0 ]] || { echo "[ERROR] No KEY=VALUE pairs found in $SECRET_FILE"; exit 2; }
+      literals+=("--from-literal=${key}=${val}")
+    done < "$SECRET_FILE"
 
-# --- Create/Update the Secret ---
-kubectl -n "$SECRET_NAMESPACE" create secret generic "$SECRET_NAME" \
-  "${literals[@]}" \
-  --type="$SECRET_TYPE" \
-  --dry-run=client -o yaml \
-| kubectl -n "$SECRET_NAMESPACE" apply -f -
+    [[ ${#literals[@]} -gt 0 ]] || { echo "[ERROR] No KEY=VALUE pairs found in $SECRET_FILE"; exit 2; }
 
-echo "[OK] Secret '$SECRET_NAME' applied in namespace '$SECRET_NAMESPACE'."
+    kubectl -n "$SECRET_NAMESPACE" create secret generic "$SECRET_NAME" \
+      "${literals[@]}" \
+      --type="$SECRET_TYPE" \
+      --dry-run=client -o yaml \
+    | kubectl -n "$SECRET_NAMESPACE" apply -f -
 
+    echo "[OK] Secret '$SECRET_NAME' applied in namespace '$SECRET_NAMESPACE'."
+
+---
+# 2) Deployment: single container with kubectl; Vault injector writes /vault/secrets/test
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault-to-k8s-secret
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vault-to-k8s-secret
+  template:
+    metadata:
+      labels:
+        app: vault-to-k8s-secret
+      annotations:
+        # Use the Vault Agent Injector to write the file 'test' at /vault/secrets/test
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "myapp-role"
+
+        # If you want container-scoped injection, uncomment below and set the container name key:
+        # vault.hashicorp.com/agent-inject-per-container: "true"
+        # vault.hashicorp.com/agent-inject-app: "true"
+
+        # Map Vault secret to file named 'test'
+        vault.hashicorp.com/agent-inject-secret-test: "secret/data/myapp"
+        vault.hashicorp.com/agent-inject-template-test: |
+          {{- with secret "secret/data/myapp" -}}
+          {{- range $k, $v := .Data.data }}
+          {{ $k }} = {{ $v }}
+          {{- end -}}
+          {{- end -}}
+    spec:
+      serviceAccountName: secret-writer-sa   # must have permissions on secrets
+      volumes:
+        - name: tools
+          configMap:
+            name: secret-from-file-bin
+            defaultMode: 0755   # make the script executable
+      containers:
+        - name: app
+          image: bitnami/kubectl:1.30
+          volumeMounts:
+            - name: tools
+              mountPath: /app/bin
+              readOnly: true
+            # The Vault injector will mount /vault/secrets automatically.
+          env:
+            - name: SECRET_FILE
+              value: "/vault/secrets/test"
+            - name: SECRET_NAME
+              value: "vault-converted-secrets"
+            - name: SECRET_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: SECRET_TYPE
+              value: "Opaque"
+          command: ["/bin/sh","-c"]
+          args:
+            - |
+              /app/bin/create_secret_from_file.sh && \
+              echo "Secret applied. Sleeping to keep pod around..." && \
+              sleep 3650d
 
 
 apiVersion: v1
