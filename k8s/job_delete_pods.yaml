@@ -1,0 +1,110 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "app.fullname" . }}-cleanup
+  labels: {{- include "app.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "app.fullname" . }}-cleanup
+  labels: {{- include "app.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "app.fullname" . }}-cleanup
+  labels: {{- include "app.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "app.fullname" . }}-cleanup
+roleRef:
+  kind: Role
+  name: {{ include "app.fullname" . }}-cleanup
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "app.fullname" . }}-cleanup
+  labels: {{- include "app.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "100"
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels: {{- include "app.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "app.fullname" . }}-cleanup
+      restartPolicy: Never
+      containers:
+        - name: kubectl
+          image: bitnami/kubectl:latest
+          command:
+            - /bin/bash
+            - -ceu
+            - |
+              set -o pipefail
+
+              NS="{{ .Release.Namespace }}"
+              DEPLOY="{{ include "app.fullname" . }}"
+              # Replace with your selector helper or inline labels (e.g., "app={{ include "app.name" . }}")
+              SELECTOR='{{ include "app.selector" . }}' 
+
+              ROLLOUT_TIMEOUT='{{ default "10m" .Values.cleanup.rolloutTimeout }}'
+              SETTLE_SECONDS={{ default 30 .Values.cleanup.settleSeconds }}
+              POLL_INTERVAL={{ default 10 .Values.cleanup.pollIntervalSeconds }}
+              MAX_WAIT={{ default 300 .Values.cleanup.maxWaitSeconds }}
+
+              echo "Waiting for rollout of deployment/$DEPLOY..."
+              kubectl -n "$NS" rollout status deploy/"$DEPLOY" --timeout="$ROLLOUT_TIMEOUT"
+
+              echo "Initial settle for $SETTLE_SECONDS seconds..."
+              sleep "$SETTLE_SECONDS"
+
+              echo "Polling up to $MAX_WAIT seconds for all pods to reach phase=Running..."
+              start_ts=$(date +%s)
+              while true; do
+                # List pods for this app whose phase != Running
+                NOT_RUNNING=$(kubectl -n "$NS" get pods -l $SELECTOR -o jsonpath='{range .items[*]}{.metadata.name} {.status.phase}{"\n"}{end}' \
+                  | awk '$2!="Running"{print $1}')
+
+                if [[ -z "$NOT_RUNNING" ]]; then
+                  echo "✅ All pods are Running. Nothing to delete."
+                  exit 0
+                fi
+
+                now_ts=$(date +%s)
+                elapsed=$(( now_ts - start_ts ))
+                if (( elapsed >= MAX_WAIT )); then
+                  echo "⏰ Timeout reached ($elapsed s). Proceeding to delete pods not in Running phase:"
+                  echo "$NOT_RUNNING" | sed 's/^/ - /'
+                  echo "$NOT_RUNNING" | xargs -r -n1 kubectl -n "$NS" delete pod --wait=false --grace-period=0
+                  echo "Cleanup complete."
+                  exit 0
+                fi
+
+                echo "Still waiting (elapsed ${elapsed}s). Pods not Running yet:"
+                echo "$NOT_RUNNING" | sed 's/^/ - /'
+                sleep "$POLL_INTERVAL"
+              done
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+
+
+values.yaml 
+
+cleanup:
+  rolloutTimeout: 10m        # how long to wait for Deployment rollout
+  settleSeconds: 30          # initial quiet time before polling
+  pollIntervalSeconds: 10    # how often to re-check pod phase
+  maxWaitSeconds: 300        # max total wait before deleting non-Running pods
