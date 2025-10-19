@@ -31,18 +31,11 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: {{ .Release.Name }}-cleanup-{{ .Release.Revision }}
-  labels:
-    app.kubernetes.io/name: {{ .Chart.Name }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
 spec:
   backoffLimit: 0
-  activeDeadlineSeconds: {{ default 600 .Values.cleanup.jobDeadlineSeconds }}   # hard cap
+  activeDeadlineSeconds: {{ default 300 .Values.cleanup.jobDeadlineSeconds }}    # hard cap
   ttlSecondsAfterFinished: 300
   template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: {{ .Chart.Name }}
-        app.kubernetes.io/instance: {{ .Release.Name }}
     spec:
       serviceAccountName: {{ .Release.Name }}-cleanup
       restartPolicy: Never
@@ -56,56 +49,48 @@ spec:
           set -o pipefail
 
           NS="{{ .Release.Namespace }}"
+          # ⬇️ Update selector if your labels differ
           SELECTOR='app.kubernetes.io/name={{ .Chart.Name }},app.kubernetes.io/instance={{ .Release.Name }}'
 
-          ROLLOUT_TIMEOUT='{{ default "10m" .Values.cleanup.rolloutTimeout }}'
-          SETTLE_SECONDS={{ default 30 .Values.cleanup.settleSeconds }}
-          POLL_INTERVAL={{ default 10 .Values.cleanup.pollIntervalSeconds }}
-          MAX_WAIT={{ default 300 .Values.cleanup.maxWaitSeconds }}
+          SETTLE={{ default 30 .Values.cleanup.settleSeconds }}
+          POLL={{ default 10 .Values.cleanup.pollIntervalSeconds }}
+          MAX={{ default 120 .Values.cleanup.maxWaitSeconds }}
 
-          echo "Finding deployments with selector: $SELECTOR"
-          DEPLOYS=$(kubectl -n "$NS" get deploy -l "$SELECTOR" -o name)
-          if [[ -z "$DEPLOYS" ]]; then
-            echo "No deployments found for selector; exiting."
-            exit 0
-          fi
+          echo "Selector: $SELECTOR"
+          echo "Initial settle: ${SETTLE}s"
+          sleep "$SETTLE"
 
-          echo "Waiting for rollout on:"
-          echo "$DEPLOYS" | sed 's/^/ - /'
-          echo "$DEPLOYS" | xargs -r -n1 kubectl -n "$NS" rollout status --timeout="$ROLLOUT_TIMEOUT" || true
-
-          echo "Initial settle for ${SETTLE_SECONDS}s…"
-          sleep "$SETTLE_SECONDS"
-
-          echo "Polling up to ${MAX_WAIT}s for pods to reach phase=Running…"
-          start_ts=$(date +%s)
+          start=$(date +%s)
           while true; do
+            echo "Checking pod phases..."
+            kubectl -n "$NS" get pods -l "$SELECTOR" -o wide || true
+
+            # capture pods not in Running
             NOT_RUNNING=$(kubectl -n "$NS" get pods -l "$SELECTOR" -o jsonpath='{range .items[*]}{.metadata.name} {.status.phase}{"\n"}{end}' \
               | awk '$2!="Running"{print $1}')
 
             if [[ -z "$NOT_RUNNING" ]]; then
-              echo "✅ All pods are Running. Nothing to delete."
+              echo "✅ All pods are Running; nothing to delete."
               exit 0
             fi
 
-            elapsed=$(( $(date +%s) - start_ts ))
-            if (( elapsed >= MAX_WAIT )); then
-              echo "⏰ Timeout (${elapsed}s). Deleting pods not in Running phase:"
+            elapsed=$(( $(date +%s) - start ))
+            if (( elapsed >= MAX )); then
+              echo "⏰ Waited ${elapsed}s; deleting pods not in Running:"
               echo "$NOT_RUNNING" | sed 's/^/ - /'
               echo "$NOT_RUNNING" | xargs -r -n1 kubectl -n "$NS" delete pod --wait=false --grace-period=0
+              echo "Done."
               exit 0
             fi
 
-            echo "Waiting… (${elapsed}s). Not Running:"
+            echo "Still not Running (elapsed ${elapsed}s). Waiting ${POLL}s…"
             echo "$NOT_RUNNING" | sed 's/^/ - /'
-            sleep "$POLL_INTERVAL"
+            sleep "$POLL"
           done
 
-
-
 # cleanup:
-#   jobDeadlineSeconds: 600
-#   rolloutTimeout: 10m
-#   settleSeconds: 30
+#   jobDeadlineSeconds: 300   # hard cap for the job itself
+#   settleSeconds: 30         # initial grace for slow init/mounts
 #   pollIntervalSeconds: 10
-#   maxWaitSeconds: 300
+#   maxWaitSeconds: 120       # after this, delete non-Running pods
+
