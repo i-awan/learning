@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+  namespace: apps
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: myapp } }
+  template:
+    metadata:
+      labels: { app: myapp }
+      annotations:
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "myapp-role"
+
+        # Source secret (KV v2)
+        vault.hashicorp.com/agent-inject-secret-configmap.yaml: "secret/data/apps/myapp"
+
+        # Where to write the rendered YAML
+        vault.hashicorp.com/agent-inject-file-configmap.yaml: "/vault/secrets/configmap.yaml"
+
+        # Template: produce a complete ConfigMap manifest using Vault values
+        vault.hashicorp.com/agent-inject-template-configmap.yaml: |
+          {{- with secret "secret/data/apps/myapp" -}}
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: myapp-config
+            namespace: apps
+          data:
+            redis_password: "{{ .Data.data.REDIS_PASSWORD }}"
+            db_user: "{{ .Data.data.DB_USERNAME }}"
+            db_pass: "{{ .Data.data.DB_PASSWORD }}"
+          {{- end }}
+
+    spec:
+      serviceAccountName: cm-writer-sa   # needs RBAC to write ConfigMaps
+      initContainers:
+        - name: apply-configmap
+          image: bitnami/kubectl:1.30
+          command: ["/bin/sh","-c"]
+          args:
+            - |
+              set -e
+              # Wait for Vault Agent to render the file (the injector runs an init container first)
+              while [ ! -s /vault/secrets/configmap.yaml ]; do sleep 1; done
+              kubectl apply -f /vault/secrets/configmap.yaml -n apps
+          volumeMounts:
+            - name: vault-secrets
+              mountPath: /vault/secrets
+      containers:
+        - name: app
+          image: your/image:tag
+          volumeMounts:
+            - name: vault-secrets
+              mountPath: /vault/secrets
+              readOnly: true
+      volumes:
+        - name: vault-secrets
+          emptyDir: {}
