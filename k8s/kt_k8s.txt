@@ -1,20 +1,47 @@
-chart.yaml 
 
-apiVersion: v2
-name: vault-to-k8s-secret
-description: Create one-shot Jobs that read Vault-injected files and upsert K8s Secrets
-type: application
-version: 0.1.0
-appVersion: "1.0.0"
 
-          {{ "{{- with secret \"" }}{{ $job.vaultPath }}{{ "\" -}}" }}
-          {{ "{{- range $k, $v := .Data.data }}" }}
-          {{ "{{$k}} = {{$v}}" }}
-          {{ "{{- end }}" }}
-          {{ "{{- end }}" }}
+vault-to-k8s-secret – Quick Start
 
-values.yaml 
+Create one-shot Jobs that read Vault-injected KEY = VALUE files and upsert Kubernetes Secrets using kubectl (no Python/pip).
 
+Prerequisites
+
+Kubernetes 1.26+
+
+Helm 3.x
+
+Vault Agent Injector running
+
+A Vault role that can read your secret paths (e.g., myapp-role)
+
+Install steps (simple)
+
+Prepare a values.yaml (example below).
+
+Create namespace and install:
+
+kubectl create namespace apps || true
+helm install v2s ./vault-to-k8s-secret -n apps -f values.yaml
+
+
+Check Jobs and Secrets:
+
+kubectl -n apps get jobs
+kubectl -n apps get secrets
+kubectl -n apps logs job/v2s-vault-to-k8s-secret-s3
+
+
+Update / re-run:
+
+# edit values.yaml, then:
+helm upgrade v2s ./vault-to-k8s-secret -n apps -f values.yaml
+
+
+Uninstall:
+
+helm uninstall v2s -n apps
+
+Example values.yaml
 image:
   repository: bitnami/kubectl
   tag: "1.30"
@@ -22,684 +49,35 @@ image:
 
 serviceAccount:
   create: true
-  name: ""  # leave empty to use release-based name
+  name: ""        # let the chart name it
 
 rbac:
   create: true
 
 vault:
-  role: "myapp-role"  # Vault role for injector
+  role: "myapp-role"  # Vault role used by the injector
 
-# One Job is rendered per item below
+# One Job per entry below
 jobs:
-  - name: myapp
-    vaultPath: "secret/data/myapp"          # Vault path to fetch
-    fileName: "test"                        # resulting filename at /vault/secrets/<fileName>
-    k8sSecretName: "vault-converted-secrets"
+  - name: s3
+    vaultPath: "secret/data/myapp-s3"     # Vault path to read
+    fileName: "s3"                        # writes /vault/secrets/s3
+    k8sSecretName: "myapp-s3-secrets"     # Kubernetes Secret to create/update
     secretType: "Opaque"
-    # Optional Secret labels/annotations (applied to the K8s Secret, not the Job)
-    secretLabels: {}
-    secretAnnotations: {}
     backoffLimit: 1
-    ttlSecondsAfterFinished: 3600
+    ttlSecondsAfterFinished: 1800
 
-  # Example of another one
-  # - name: payments
-  #   vaultPath: "secret/data/payments"
-  #   fileName: "payvars"
-  #   k8sSecretName: "payments-secrets"
-  #   secretType: "Opaque"
-  #   backoffLimit: 2
-  #   ttlSecondsAfterFinished: 600
+  - name: redis
+    vaultPath: "secret/data/myapp-redis"
+    fileName: "redis"
+    k8sSecretName: "myapp-redis-secrets"
+    secretType: "Opaque"
+    backoffLimit: 1
+    ttlSecondsAfterFinished: 1800
 
 
-templates/_helpers.tpl 
+Notes
 
-{{- define "vault2secret.name" -}}
-{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
-{{- end }}
+fileName is just the filename (no slashes) created under /vault/secrets/; the script reads /vault/secrets/<fileName>.
 
-{{- define "vault2secret.fullname" -}}
-{{- if .Values.fullnameOverride -}}
-{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
-{{- else -}}
-{{- $name := include "vault2secret.name" . -}}
-{{- if contains $name .Release.Name -}}
-{{- .Release.Name | trunc 63 | trimSuffix "-" -}}
-{{- else -}}
-{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" -}}
-{{- end -}}
-{{- end -}}
-{{- end }}
-
-{{- define "vault2secret.serviceAccountName" -}}
-{{- if .Values.serviceAccount.create -}}
-{{- if .Values.serviceAccount.name -}}
-{{ .Values.serviceAccount.name }}
-{{- else -}}
-{{ include "vault2secret.fullname" . }}
-{{- end -}}
-{{- else -}}
-{{- default "default" .Values.serviceAccount.name -}}
-{{- end -}}
-{{- end }}
-
-
-templates/configmap-script.yaml
-
-
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ include "vault2secret.fullname" . }}-bin
-  namespace: {{ .Release.Namespace }}
-data:
-  create_secret_from_file.sh: |
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    SECRET_FILE="${SECRET_FILE:-/vault/secrets/test}"
-    SECRET_NAME="${SECRET_NAME:-vault-converted-secrets}"
-    SECRET_NAMESPACE="${SECRET_NAMESPACE:-default}"
-    SECRET_TYPE="${SECRET_TYPE:-Opaque}"
-    SECRET_LABELS_JSON="${SECRET_LABELS_JSON:-{}}"
-    SECRET_ANNOTATIONS_JSON="${SECRET_ANNOTATIONS_JSON:-{}}"
-
-    # Helpers: trim without xargs, safe for unmatched quotes
-    trim() { sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' ; }
-    strip_quotes_if_paired() {
-      local s="$1"; local len=${#s}
-      if (( len >= 2 )); then
-        local first="${s:0:1}"; local last="${s: -1}"
-        if { [[ "$first" == '"' && "$last" == '"' ]] || [[ "$first" == "'" && "$last" == "'" ]]; }; then
-          printf '%s' "${s:1:len-2}"; return
-        fi
-      fi
-      printf '%s' "$s"
-    }
-
-    [[ -f "$SECRET_FILE" ]] || { echo "[ERROR] $SECRET_FILE not found"; exit 1; }
-
-    # Build --from-literal args (single-line values)
-    literals=()
-    while IFS= read -r raw || [[ -n "${raw:-}" ]]; do
-      raw="${raw%$'\r'}"
-      [[ -z "${raw//[[:space:]]/}" ]] && continue
-      [[ "$raw" =~ ^[[:space:]]*# ]] && continue
-      [[ "$raw" != *"="* ]] && continue
-
-      key="${raw%%=*}"
-      val="${raw#*=}"
-
-      key="$(printf '%s' "$key" | trim)"
-      val="$(printf '%s' "$val" | trim)"
-      val="$(strip_quotes_if_paired "$val")"
-      [[ -z "$key" ]] && continue
-      literals+=("--from-literal=${key}=${val}")
-    done < "$SECRET_FILE"
-
-    [[ ${#literals[@]} -gt 0 ]] || { echo "[ERROR] No KEY=VALUE pairs found in $SECRET_FILE"; exit 2; }
-
-    # Create a base Secret YAML via dry-run
-    tmp="$(mktemp)"
-    kubectl -n "$SECRET_NAMESPACE" create secret generic "$SECRET_NAME" \
-      "${literals[@]}" \
-      --type="$SECRET_TYPE" \
-      --dry-run=client -o yaml > "$tmp"
-
-    # Merge labels/annotations (optional)
-    # Note: use kubectl patch style by generating new metadata if provided
-    if [[ "$SECRET_LABELS_JSON" != "{}" || "$SECRET_ANNOTATIONS_JSON" != "{}" ]]; then
-      # Convert JSON maps to YAML under metadata
-      python3 - "$tmp" <<'PY' || true
-import os, sys, json, yaml
-p = sys.argv[1]
-with open(p) as f:
-    obj = yaml.safe_load(f)
-labels = json.loads(os.environ.get("SECRET_LABELS_JSON","{}"))
-annos = json.loads(os.environ.get("SECRET_ANNOTATIONS_JSON","{}"))
-obj.setdefault("metadata",{})
-if labels:
-    obj["metadata"].setdefault("labels",{}).update({str(k):str(v) for k,v in labels.items()})
-if annos:
-    obj["metadata"].setdefault("annotations",{}).update({str(k):str(v) for k,v in annos.items()})
-with open(p,"w") as f:
-    yaml.safe_dump(obj, f, sort_keys=False)
-PY
-    fi
-
-    cat "$tmp" | kubectl -n "$SECRET_NAMESPACE" apply -f -
-    rm -f "$tmp"
-    echo "[OK] Secret '$SECRET_NAME' applied in namespace '$SECRET_NAMESPACE'."
-
-
-
-templates/rbac.yaml
-
-
-{{- if .Values.rbac.create }}
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: {{ include "vault2secret.fullname" . }}-secret-writer
-  namespace: {{ .Release.Namespace }}
-rules:
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get","list","create","update","patch"]
-
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: {{ include "vault2secret.fullname" . }}-secret-writer
-  namespace: {{ .Release.Namespace }}
-subjects:
-  - kind: ServiceAccount
-    name: {{ include "vault2secret.serviceAccountName" . }}
-    namespace: {{ .Release.Namespace }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: {{ include "vault2secret.fullname" . }}-secret-writer
-{{- end }}
-
-
-templates/job.yaml 
-
-{{- $fullname := include "vault2secret.fullname" . -}}
-{{- range $i, $job := .Values.jobs }}
----
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: {{ printf "%s-%s" $fullname $job.name | trunc 63 | trimSuffix "-" }}
-  namespace: {{ $.Release.Namespace }}
-  labels:
-    app.kubernetes.io/name: {{ include "vault2secret.name" $ }}
-    app.kubernetes.io/instance: {{ $.Release.Name }}
-spec:
-  backoffLimit: {{ default 1 $job.backoffLimit }}
-  {{- if $job.ttlSecondsAfterFinished }}
-  ttlSecondsAfterFinished: {{ $job.ttlSecondsAfterFinished }}
-  {{- end }}
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: {{ include "vault2secret.name" $ }}
-        app.kubernetes.io/instance: {{ $.Release.Name }}
-        job: {{ $job.name }}
-      annotations:
-        vault.hashicorp.com/agent-inject: "true"
-        vault.hashicorp.com/role: "{{ $.Values.vault.role }}"
-        vault.hashicorp.com/agent-inject-secret-{{ $job.fileName | default "test" }}: "{{ $job.vaultPath }}"
-        vault.hashicorp.com/agent-inject-template-{{ $job.fileName | default "test" }}: |
-          {{`{{- with secret "`}}{{ $job.vaultPath }}{{`" -}}`}}
-          {{`{{- range $k, $v := .Data.data }}`}}
-          {{`{{$k}} = {{$v}}`}}
-          {{`{{- end }}`}}
-          {{`{{- end }}`}}
-    spec:
-      serviceAccountName: {{ include "vault2secret.serviceAccountName" $ }}
-      restartPolicy: Never
-      volumes:
-        - name: tools
-          configMap:
-            name: {{ include "vault2secret.fullname" $ }}-bin
-            defaultMode: 0755
-      containers:
-        - name: run-{{ $job.name }}
-          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
-          imagePullPolicy: {{ $.Values.image.pullPolicy }}
-          volumeMounts:
-            - name: tools
-              mountPath: /app/bin
-              readOnly: true
-          env:
-            - name: SECRET_FILE
-              value: "/vault/secrets/{{ $job.fileName | default "test" }}"
-            - name: SECRET_NAME
-              value: "{{ $job.k8sSecretName }}"
-            - name: SECRET_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-            - name: SECRET_TYPE
-              value: "{{ default "Opaque" $job.secretType }}"
-          command: ["/bin/sh","-c"]
-          args: ["/app/bin/create_secret_from_file.sh"]
-{{- end }}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: vault-to-k8s-secret-once
-  namespace: default
-spec:
-  backoffLimit: 1                 # retry once on failure
-  ttlSecondsAfterFinished: 3600   # auto-clean up 1 hour after completion (optional)
-  template:
-    metadata:
-      labels:
-        app: vault-to-k8s-secret
-      annotations:
-        # Vault Agent Injector: writes /vault/secrets/test
-        vault.hashicorp.com/agent-inject: "true"
-        vault.hashicorp.com/role: "myapp-role"
-        vault.hashicorp.com/agent-inject-secret-test: "secret/data/myapp"
-        vault.hashicorp.com/agent-inject-template-test: |
-          {{- with secret "secret/data/myapp" -}}
-          {{- range $k, $v := .Data.data }}
-          {{ $k }} = {{ $v }}
-          {{- end -}}
-          {{- end -}}
-    spec:
-      serviceAccountName: secret-writer-sa   # needs create/patch/get on secrets
-      restartPolicy: Never
-      volumes:
-        - name: tools
-          configMap:
-            name: secret-from-file-bin      # contains create_secret_from_file.sh
-            defaultMode: 0755
-      containers:
-        - name: run-once
-          image: bitnami/kubectl:1.30
-          volumeMounts:
-            - name: tools
-              mountPath: /app/bin
-              readOnly: true
-          env:
-            - name: SECRET_FILE
-              value: "/vault/secrets/test"
-            - name: SECRET_NAME
-              value: "vault-converted-secrets"
-            - name: SECRET_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-            - name: SECRET_TYPE
-              value: "Opaque"
-          command: ["/bin/sh","-c"]
-          args:
-            - |
-              /app/bin/create_secret_from_file.sh
-
-
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: secret-from-file-bin
-  namespace: default
-data:
-  create_secret_from_file.sh: |
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    SECRET_FILE="${SECRET_FILE:-/vault/secrets/test}"
-    SECRET_NAME="${SECRET_NAME:-vault-converted-secrets}"
-    SECRET_NAMESPACE="${SECRET_NAMESPACE:-default}"
-    SECRET_TYPE="${SECRET_TYPE:-Opaque}"
-
-    # Helpers: trim without xargs, safe for unmatched quotes
-    trim() { sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' ; }
-    strip_quotes_if_paired() {
-      local s="$1"
-      local len=${#s}
-      if (( len >= 2 )); then
-        local first="${s:0:1}"; local last="${s: -1}"
-        if { [[ "$first" == '"' && "$last" == '"' ]] || [[ "$first" == "'" && "$last" == "'" ]]; }; then
-          printf '%s' "${s:1:len-2}"; return
-        fi
-      fi
-      printf '%s' "$s"
-    }
-
-    [[ -f "$SECRET_FILE" ]] || { echo "[ERROR] $SECRET_FILE not found"; exit 1; }
-
-    literals=()
-    # Read file line-by-line (preserve spaces, no backslash escapes)
-    while IFS= read -r raw || [[ -n "${raw:-}" ]]; do
-      # Normalize potential CRLF
-      raw="${raw%$'\r'}"
-
-      # Skip blank lines / comments
-      [[ -z "${raw//[[:space:]]/}" ]] && continue
-      [[ "$raw" =~ ^[[:space:]]*# ]] && continue
-      [[ "$raw" != *"="* ]] && continue
-
-      key="${raw%%=*}"
-      val="${raw#*=}"
-
-      # Trim safely (no xargs)
-      key="$(printf '%s' "$key" | trim)"
-      val="$(printf '%s' "$val" | trim)"
-
-      # Strip only properly paired surrounding quotes
-      val="$(strip_quotes_if_paired "$val")"
-
-      [[ -z "$key" ]] && continue
-
-      literals+=("--from-literal=${key}=${val}")
-    done < "$SECRET_FILE"
-
-    [[ ${#literals[@]} -gt 0 ]] || { echo "[ERROR] No KEY=VALUE pairs found in $SECRET_FILE"; exit 2; }
-
-    kubectl -n "$SECRET_NAMESPACE" create secret generic "$SECRET_NAME" \
-      "${literals[@]}" \
-      --type="$SECRET_TYPE" \
-      --dry-run=client -o yaml \
-    | kubectl -n "$SECRET_NAMESPACE" apply -f -
-
-    echo "[OK] Secret '$SECRET_NAME' applied in namespace '$SECRET_NAMESPACE'."
-
-
-
-
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: secret-from-file-bin
-  namespace: default
-data:
-  create_secret_from_file.sh: |
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    SECRET_FILE="${SECRET_FILE:-/vault/secrets/test}"
-    SECRET_NAME="${SECRET_NAME:-vault-converted-secrets}"
-    SECRET_NAMESPACE="${SECRET_NAMESPACE:-default}"
-    SECRET_TYPE="${SECRET_TYPE:-Opaque}"
-
-    # Helpers: trim without xargs, safe for unmatched quotes
-    trim() { sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' ; }
-    strip_quotes_if_paired() {
-      local s="$1"
-      local len=${#s}
-      if (( len >= 2 )); then
-        local first="${s:0:1}"; local last="${s: -1}"
-        if { [[ "$first" == '"' && "$last" == '"' ]] || [[ "$first" == "'" && "$last" == "'" ]]; }; then
-          printf '%s' "${s:1:len-2}"; return
-        fi
-      fi
-      printf '%s' "$s"
-    }
-
-    [[ -f "$SECRET_FILE" ]] || { echo "[ERROR] $SECRET_FILE not found"; exit 1; }
-
-    literals=()
-    # Read file line-by-line (preserve spaces, no backslash escapes)
-    while IFS= read -r raw || [[ -n "${raw:-}" ]]; do
-      # Normalize potential CRLF
-      raw="${raw%$'\r'}"
-
-      # Skip blank lines / comments
-      [[ -z "${raw//[[:space:]]/}" ]] && continue
-      [[ "$raw" =~ ^[[:space:]]*# ]] && continue
-      [[ "$raw" != *"="* ]] && continue
-
-      key="${raw%%=*}"
-      val="${raw#*=}"
-
-      # Trim safely (no xargs)
-      key="$(printf '%s' "$key" | trim)"
-      val="$(printf '%s' "$val" | trim)"
-
-      # Strip only properly paired surrounding quotes
-      val="$(strip_quotes_if_paired "$val")"
-
-      [[ -z "$key" ]] && continue
-
-      literals+=("--from-literal=${key}=${val}")
-    done < "$SECRET_FILE"
-
-    [[ ${#literals[@]} -gt 0 ]] || { echo "[ERROR] No KEY=VALUE pairs found in $SECRET_FILE"; exit 2; }
-
-    kubectl -n "$SECRET_NAMESPACE" create secret generic "$SECRET_NAME" \
-      "${literals[@]}" \
-      --type="$SECRET_TYPE" \
-      --dry-run=client -o yaml \
-    | kubectl -n "$SECRET_NAMESPACE" apply -f -
-
-    echo "[OK] Secret '$SECRET_NAME' applied in namespace '$SECRET_NAMESPACE'."
-
----
-# 2) Deployment: single container with kubectl; Vault injector writes /vault/secrets/test
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: vault-to-k8s-secret
-  namespace: default
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: vault-to-k8s-secret
-  template:
-    metadata:
-      labels:
-        app: vault-to-k8s-secret
-      annotations:
-        # Use the Vault Agent Injector to write the file 'test' at /vault/secrets/test
-        vault.hashicorp.com/agent-inject: "true"
-        vault.hashicorp.com/role: "myapp-role"
-
-        # If you want container-scoped injection, uncomment below and set the container name key:
-        # vault.hashicorp.com/agent-inject-per-container: "true"
-        # vault.hashicorp.com/agent-inject-app: "true"
-
-        # Map Vault secret to file named 'test'
-        vault.hashicorp.com/agent-inject-secret-test: "secret/data/myapp"
-        vault.hashicorp.com/agent-inject-template-test: |
-          {{- with secret "secret/data/myapp" -}}
-          {{- range $k, $v := .Data.data }}
-          {{ $k }} = {{ $v }}
-          {{- end -}}
-          {{- end -}}
-    spec:
-      serviceAccountName: secret-writer-sa   # must have permissions on secrets
-      volumes:
-        - name: tools
-          configMap:
-            name: secret-from-file-bin
-            defaultMode: 0755   # make the script executable
-      containers:
-        - name: app
-          image: bitnami/kubectl:1.30
-          volumeMounts:
-            - name: tools
-              mountPath: /app/bin
-              readOnly: true
-            # The Vault injector will mount /vault/secrets automatically.
-          env:
-            - name: SECRET_FILE
-              value: "/vault/secrets/test"
-            - name: SECRET_NAME
-              value: "vault-converted-secrets"
-            - name: SECRET_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-            - name: SECRET_TYPE
-              value: "Opaque"
-          command: ["/bin/sh","-c"]
-          args:
-            - |
-              /app/bin/create_secret_from_file.sh && \
-              echo "Secret applied. Sleeping to keep pod around..." && \
-              sleep 3650d
-
-
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: admin-service-account
-  namespace: default
-
----
-
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  namespace: default
-  name: admin-role
-rules:
-  - apiGroups: [""]
-    resources: ["pods", "services", "configmaps", "secrets", "endpoints"]
-    verbs: ["get", "list", "create", "update", "delete", "watch"]
-
-  - apiGroups: ["apps"]
-    resources: ["deployments", "replicasets", "statefulsets"]
-    verbs: ["get", "list", "create", "update", "delete", "watch"]
-
-  - apiGroups: ["rbac.authorization.k8s.io"]
-    resources: ["roles", "rolebindings", "serviceaccounts"]
-    verbs: ["get", "list", "create", "update", "delete", "watch"]
-
----
-
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: admin-role-binding
-  namespace: default
-subjects:
-  - kind: ServiceAccount
-    name: admin-service-account
-    namespace: default
-roleRef:
-  kind: Role
-  name: admin-role
-  apiGroup: rbac.authorization.k8s.io
-
-
-
-
-
-
-
-
-
-In a Kubernetes cluster, there are two main types of components: Control Plane components and Worker Node components. Here's a breakdown of each:
-
-Control Plane Components
-These components manage the entire Kubernetes cluster and make decisions about scheduling, scaling, and monitoring the cluster state.
-
-API Server (kube-apiserver):
-
-Acts as the front-end for the Kubernetes control plane.
-Exposes the Kubernetes API, handling communication between components and external clients.
-
-Controller Manager (kube-controller-manager):
-
-Runs various controllers (e.g., Node Controller, Deployment Controller) that regulate the state of the cluster, ensuring the desired state matches the actual state.
-
-Scheduler (kube-scheduler):
-
-Assigns pods to worker nodes based on resource requirements and constraints, ensuring efficient use of resources.
-etcd:
-
-A key-value store that stores all the cluster data, serving as the Kubernetes "database."
-Ensures consistent storage of the cluster's configuration and state.
-
-Cloud Controller Manager (cloud-controller-manager):
-
-Interacts with the underlying cloud provider to manage resources (e.g., load balancers, storage) if running Kubernetes on a cloud infrastructure.
-This component is optional and only required in cloud-based deployments.
-
-
-Worker Node Components
-
-
-These components run the application workloads and report to the control plane.
-
-Kubelet (kubelet):
-
-An agent that runs on each worker node.
-Ensures that containers are running as expected by communicating with the API server and managing pod execution on the node.
-
-Kube-proxy (kube-proxy):
-
-Maintains network rules on each worker node to enable communication between pods and services, handling traffic routing within the cluster.
-Container Runtime (e.g., containerd, CRI-O, Docker):
-
-Responsible for running the actual containers that make up the pods.
-It interacts with the kubelet to start, stop, and manage containers.
-These components work together to ensure that the cluster functions correctly, with the control plane managing the overall state and the worker nodes running the actual application workloads.
-
-
-
-Orchestration in the context of containerized environments like Kubernetes refers to the automated coordination, management, and deployment of multiple containers that make up an application. It involves handling tasks such as scaling, networking, load balancing, and maintaining the desired state of applications. Orchestration ensures that containers are deployed to the right nodes, automatically restarts failed containers, and scales them up or down based on demand. By providing these capabilities, orchestration helps manage complex, distributed applications efficiently, ensuring high availability, fault tolerance, and optimal resource utilization across a cluster of servers. This automation reduces manual intervention, making it easier to manage and deploy applications in dynamic and large-scale environments.
-
-
-
-Pod
-A Pod is the smallest and simplest unit in Kubernetes, representing one or more containers that share the same network namespace, storage, and configuration. Pods are used to run application containers, and they provide an environment for containers to communicate and share resources.
-
-ReplicaSet
-A ReplicaSet ensures that a specified number of identical pod replicas are running at any given time. It automatically creates or deletes pods to maintain the desired number of replicas, ensuring high availability and scaling of applications.
-
-Deployment
-A Deployment is a higher-level Kubernetes object that manages ReplicaSets, providing declarative updates for pods and ReplicaSets. It offers features like rolling updates, rollbacks, and version control, making it easier to manage application updates and scaling over time.
-
-Difference between ReplicaSet and Deployment
-The key difference is that a ReplicaSet maintains the desired number of pod replicas, while a Deployment provides a higher level of control, allowing you to manage the lifecycle, updates, and rollbacks of your application. Deployments use ReplicaSets under the hood but add additional features for easier application management.
-
-StatefulSet
-A StatefulSet manages the deployment and scaling of pods that require stable, unique identities, persistent storage, and ordered deployment. It is used for stateful applications where pod identity and state need to be preserved, such as databases or clustered applications.
-
-DaemonSet
-A DaemonSet ensures that a specific pod runs on all (or selected) nodes in a Kubernetes cluster. It is typically used for system-level tasks such as log collection, monitoring, or network management, ensuring that these tasks are running across all nodes.
-
-Service
-A Service is an abstraction that defines a stable network endpoint to expose a set of pods, enabling communication within the cluster or with external clients. It provides load balancing and service discovery, allowing seamless access to pods even as they are created or deleted.
-
-Persistent Volume (PV)
-A Persistent Volume (PV) is a piece of storage in a Kubernetes cluster that has been provisioned by an administrator or dynamically by a StorageClass. It provides persistent storage that can be used by pods, allowing data to persist beyond the lifecycle of individual pods.
-
-
-
-Deploying Kubernetes On-Premises
-Pros:
-Full Control: Offers complete control over hardware, networking, and security configurations, allowing for customizations tailored to specific requirements.
-Data Privacy: Ideal for organizations with strict data privacy or compliance requirements, as all data stays within the organization's infrastructure.
-Cost Predictability: Fixed infrastructure costs, which can be more predictable over time compared to cloud's pay-as-you-go model.
-Performance Optimization: Potential for lower latency and higher performance due to direct access to physical hardware.
-Integration with Legacy Systems: Easier integration with existing on-premises systems, tools, and applications that might not be cloud-compatible.
-Cons:
-High Initial Investment: Significant upfront costs for hardware, networking, and infrastructure setup, which can be a barrier for smaller organizations.
-Maintenance Overhead: Requires ongoing maintenance, hardware upgrades, and IT personnel to manage the infrastructure and Kubernetes itself.
-Scaling Limitations: Scaling requires additional hardware purchases, which can lead to slower response times to changes in demand.
-Complex Disaster Recovery: Setting up and managing disaster recovery can be complex and resource-intensive compared to cloud-based solutions.
-Slower Updates: Infrastructure updates, such as hardware or Kubernetes version upgrades, can be slower and more disruptive compared to cloud-managed environments.
-Deploying Kubernetes on Cloud
-Pros:
-Scalability: Easy and quick to scale up or down based on demand, with access to virtually unlimited resources.
-Reduced Maintenance: Cloud providers handle infrastructure maintenance, upgrades, and patching, reducing the administrative burden.
-Disaster Recovery & High Availability: Built-in redundancy, backup, and recovery options are available, making it easier to ensure high availability.
-Global Accessibility: Provides easy access to resources and deployment across multiple geographic regions, improving performance and resilience.
-Pay-as-You-Go: Offers a flexible cost model, allowing you to pay only for the resources you use, which can be cost-effective for varying workloads.
-Cons:
-Ongoing Costs: Can become expensive over time, especially with high resource usage or egress data charges.
-Limited Control: Less control over the underlying infrastructure, which can be a concern for organizations with specific hardware or networking requirements.
-Vendor Lock-In: Risk of being tied to a particular cloud provider's ecosystem, making migration to another platform complex and costly.
-Data Security Concerns: Although cloud providers have strong security measures, some organizations may have concerns about data privacy or compliance.
-Variable Performance: Potential for variable performance due to shared cloud resources or network congestion, which might affect latency-sensitive applications.
-
-
-
-
-
-
+The script supports single-line values per key (e.g., DB_PASS = s3cr3t). For multi-line values, switch to a stringData: YAML approach.
