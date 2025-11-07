@@ -37,6 +37,11 @@ Update / re-run:
 helm upgrade v2s ./vault-to-k8s-secret -n apps -f values.yaml
 
 
+
+
+
+
+
 Uninstall:
 
 helm uninstall v2s -n apps
