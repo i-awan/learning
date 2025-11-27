@@ -1,48 +1,51 @@
 import requests
 from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 
-# URLs
-login_url = "https://example.com/login"
-protected_url = "https://example.com/dashboard"
-
-# Start a session so cookies (including CSRF cookies) are kept
 session = requests.Session()
 
-# 1) Get the login page (this gives us the CSRF token in the HTML)
-r = session.get(login_url)
+login_page_url = "https://example.com/login"   # the page you visit in the browser
+protected_url   = "https://example.com/account"
+
+# 1) GET login page
+r = session.get(login_page_url)
 r.raise_for_status()
 
-# 2) Parse the CSRF token out of the HTML
 soup = BeautifulSoup(r.text, "html.parser")
 
-# Adjust the selector to match your site's HTML
-csrf_input = soup.find("input", {"name": "csrf_token"})
+# 2) Find the <form> and its action/method
+form = soup.find("form")
+action = form.get("action")
+method = (form.get("method") or "get").lower()
+
+login_post_url = urljoin(login_page_url, action)  # handle relative URLs like "/auth/login"
+
+# 3) Extract CSRF token (adjust name as needed)
+csrf_input = form.find("input", {"name": "csrf_token"})
 csrf_token = csrf_input["value"]
 
-print("CSRF token:", csrf_token)
-
-# 3) Build the login payload (include username, password, and the CSRF token)
+# 4) Build payload
 payload = {
     "username": "your_username",
     "password": "your_password",
     "csrf_token": csrf_token,
 }
 
-# Optional: often you should send the same headers a browser would send
 headers = {
     "User-Agent": "Mozilla/5.0",
+    "Referer": login_page_url,
 }
 
-# 4) POST to log in
-login_resp = session.post(login_url, data=payload, headers=headers)
+# 5) Send request using the form's method
+if method == "post":
+    login_resp = session.post(login_post_url, data=payload, headers=headers)
+else:
+    login_resp = session.get(login_post_url, params=payload, headers=headers)
+
 login_resp.raise_for_status()
+print("Logged in? Final URL:", login_resp.url)
 
-# Quick sanity check: does the response look like a logged-in page?
-print("After login URL:", login_resp.url)
-
-# 5) Use the same session to access the protected page
+# 6) Get protected page
 protected_resp = session.get(protected_url, headers=headers)
 protected_resp.raise_for_status()
-
-# Print the HTML of the protected page
 print(protected_resp.text)
