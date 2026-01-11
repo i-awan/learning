@@ -1,0 +1,50 @@
+Impact Assessment (IA): Cyberflow – Aqua to Wiz Transition
+1. Purpose of the Impact Assessment
+This Impact Assessment (IA) evaluates the current integration between Cyberflow and Aqua Security to understand technical, security, operational, and regulatory dependencies before replacing Aqua with Wiz. The objective is to ensure that the transition does not introduce delivery disruption, security regression, or regulatory risk in a banking environment.
+
+2. Current-State Overview (Cyberflow + Aqua)
+Cyberflow is an internal scanning orchestration tool triggered by CI/CD pipelines. It sends container images to Aqua Security scanners deployed in GCP Kubernetes clusters. Aqua performs image analysis and returns scan results synchronously to Cyberflow, which then applies policy decisions and returns pass/fail outcomes to pipelines.
+
+Figure 1: Current-State Architecture – Cyberflow + Aqua
+
+3. Why an Impact Assessment Is Required
+- Cyberflow is tightly coupled to Aqua APIs, schemas, and timing expectations.
+- Removing Aqua without understanding dependencies risks silent security regressions.
+- Pipelines rely on deterministic scan responses.
+- Wiz introduces a SaaS-based, asynchronous, registry-centric scanning model.
+- Regulatory expectations require evidence-based control replacement.
+- Network trust boundaries change when moving from internal scanners to SaaS.
+
+4. Scope of the Impact Assessment
+- Functional dependencies between Cyberflow and Aqua
+- API and data contract dependencies
+- Policy enforcement and severity mapping
+- Network flows and trust boundaries
+- Operational support and failure handling
+- Compliance, audit, and evidence generation
+- Transition, rollback, and parallel-run capability
+
+5. Future-State Options
+Two future-state integration options were evaluated as part of this IA.
+
+Figure 2: Future State Option A – Cyberflow + Wiz (AWS Broker)
+
+Figure 3: Future State Option B – Cyberflow + Wiz (On-Prem Connector)
+
+
+
+6. Preferred Future State
+Option B (On-Prem Kubernetes Wiz Connector) is the preferred future state. This option preserves internal registry isolation, avoids introducing AWS as a dependency, keeps trust boundaries local, minimises architectural change, and provides a clearer migration path from Aqua Security.
+7. Risk Register
+Risk ID	Risk Description	Impact	Likelihood	Mitigation
+R1	Scan latency differences between Aqua and Wiz	Medium	Medium	Parallel run, async handling in Cyberflow
+R2	Severity mismatch causing incorrect gating	High	Medium	Severity mapping and tuning during IA
+R3	New SaaS dependency availability risk	Medium	Low	Fail-open policy for non-prod, rollback capability
+R4	Outbound egress misconfiguration	High	Low	Centralised egress controls and logging
+R5	Operational unfamiliarity with Wiz	Medium	Medium	Runbooks, training, phased rollout
+8. Decision and Recommendation
+Based on the findings of this Impact Assessment, it is recommended to proceed with Option B: deploying a Wiz connector within on-prem Kubernetes environments while retaining Cyberflow as the orchestration and policy enforcement layer.
+
+Aqua Security should remain in place during a controlled parallel-run phase until Wiz demonstrates functional parity, acceptable noise levels, and operational stability. Final decommissioning of Aqua should occur only after formal security and architecture approval.
+9. Conclusion
+This Impact Assessment provides assurance that the transition from Aqua to Wiz can be achieved without disrupting CI/CD pipelines or weakening the organisation’s security posture. It supports an evidence-led, regulator-friendly migration aligned with banking risk management practices.

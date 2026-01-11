@@ -1,0 +1,309 @@
+Multi-Cloud Container Image Scanning Strategy
+
+Transitioning from Aqua to Wiz
+
+1. Background and Current State
+
+The organisation currently employs a heterogeneous container image scanning model aligned to platform-specific tooling:
+
+Platform	Current Image Scanning Tool
+GCP	Native scanning
+Azure	Aqua Security
+AWS	Native scanning
+On-Prem	Aqua Security
+
+While this model provides coverage, it introduces:
+
+Operational inconsistency
+
+Fragmented reporting
+
+Duplicated tooling and cost
+
+Uneven maturity across platforms
+
+To address these challenges, Wiz has been selected as the strategic cloud security posture and vulnerability visibility platform, with the long-term objective of phasing out Aqua, subject to Wiz meeting image-scanning requirements.
+
+This document outlines how Wiz can be incorporated across AWS, Azure, GCP, and On-Prem in a secure, low-friction, phased approach, while allowing native tooling to coexist where appropriate.
+
+2. Design Principles
+
+The transition is guided by the following principles, critical in a banking environment:
+
+Security First, Not Tool First
+Adoption must not increase risk, expand attack surface, or weaken controls.
+
+Least Privilege and Clear Trust Boundaries
+SaaS access is tightly scoped, auditable, and revocable.
+
+Ease of Adoption
+Minimal agent deployment, minimal developer disruption, fast time to value.
+
+Phased Replacement, Not Big Bang
+Aqua is retired only when Wiz demonstrably meets functional and operational requirements.
+
+Platform-Native Where It Makes Sense
+Native cloud tooling may remain in place as compensating or complementary controls.
+
+3. Target State Overview
+
+Target model:
+
+Wiz provides centralised, agentless image scanning visibility
+
+Native cloud scanners remain temporarily as:
+
+Validation
+
+Defence-in-depth
+
+Regulatory comfort
+
+Aqua is progressively decommissioned as confidence grows
+
+4. Platform-by-Platform Strategy
+4.1 AWS
+
+Current: Native scanning
+Target: Wiz as primary scanner, native as complementary
+
+Implementation
+
+Images are scanned in Amazon ECR via:
+
+Cross-account IAM roles
+
+Read-only permissions
+
+Wiz performs:
+
+OS and dependency CVE scanning
+
+Contextual risk correlation (exposure, IAM access)
+
+Security considerations
+
+No agents in EKS or EC2
+
+No registry credentials shared
+
+Full CloudTrail auditability
+
+Strong alignment with AWS Organizations and SCPs
+
+Adoption impact
+
+Low friction
+
+No pipeline changes required initially
+
+Fast onboarding and coverage
+
+4.2 Azure
+
+Current: Aqua Security
+Target: Wiz replaces Aqua for image scanning
+
+Implementation
+
+Azure Container Registry (ACR) integrated with Wiz via:
+
+Service Principal / Managed Identity
+
+Read-only access to image layers
+
+Wiz scans images and correlates with:
+
+AKS exposure
+
+Identity and network posture
+
+Security considerations
+
+Removes agent-based DaemonSets and admission controllers
+
+Reduces operational and stability risk in AKS
+
+Clear SaaS trust boundary
+
+Transition approach
+
+Run Wiz and Aqua in parallel initially
+
+Compare:
+
+CVE detection
+
+Coverage
+
+Noise levels
+
+Decommission Aqua once equivalence is proven
+
+4.3 Google Cloud Platform (GCP)
+
+Current: Native scanning
+Target: Wiz overlays native scanning for consistency
+
+Implementation
+
+Wiz integrates with:
+
+Google Artifact Registry
+
+GKE metadata
+
+Native scanning remains:
+
+As a baseline
+
+For regulator reassurance
+
+Security considerations
+
+No agents required
+
+Read-only service account
+
+Minimal incremental risk
+
+Adoption impact
+
+Very low
+
+Primarily a visibility unification exercise
+
+4.4 On-Premises (Kubernetes / VM-based)
+
+Current: Aqua Security
+Target: Transitional coexistence; selective continuation
+
+This is the most sensitive area.
+
+Constraints
+
+Wiz is SaaS-first and agentless
+
+On-prem environments often have:
+
+Network restrictions
+
+Data residency requirements
+
+Limited SaaS tolerance
+
+Recommended approach
+
+Short term:
+
+Continue Aqua for on-prem runtime and registry scanning
+
+Medium term:
+
+Mirror approved on-prem images into:
+
+Cloud-based ECR / ACR
+
+Scan mirrored images with Wiz
+
+Long term:
+
+Re-evaluate need for on-prem container platforms
+
+Consolidate scanning where feasible
+
+Rationale
+
+Avoids introducing SaaS access directly into on-prem
+
+Maintains security posture while reducing duplication
+
+Aligns with cloud-first strategy
+
+5. Security and Risk Management
+SaaS risk controls
+
+Vendor risk assessment (SOC 2, ISO 27001)
+
+Contractual SLAs and breach notification
+
+Data retention and deletion assurances
+
+Identity and access
+
+Dedicated Wiz roles per platform
+
+Read-only access wherever possible
+
+SCPs / policies preventing role modification
+
+Network controls
+
+Outbound-only connectivity
+
+No inbound access from Wiz
+
+Controlled egress paths
+
+6. Operating Model
+Ownership
+
+Security: Wiz policy, severity thresholds, reporting
+
+Platform: Registry integration, access models
+
+Application teams: Image remediation
+
+Remediation philosophy
+
+Focus on:
+
+Deployed images
+
+Internet-exposed workloads
+
+Sensitive access paths
+
+Avoid “scan everything, fix nothing” outcomes
+
+Metrics for success
+
+Reduction in critical exposed CVEs
+
+Time-to-remediation improvement
+
+Reduced tool overlap and agent footprint
+
+7. Phasing Out Aqua – Decision Criteria
+
+Aqua will be retired only when Wiz demonstrates:
+
+Comparable or better image vulnerability coverage
+
+Acceptable false positive / noise levels
+
+Clear audit and reporting capability
+
+No regression in risk posture
+
+Operational simplicity gains
+
+This decision will be evidence-based, not time-based.
+
+8. Conclusion
+
+Adopting Wiz as the strategic image scanning platform enables:
+
+Unified visibility across cloud platforms
+
+Reduced operational complexity
+
+Improved risk prioritisation
+
+Alignment with banking security and governance expectations
+
+By phasing adoption, retaining native tooling where appropriate, and decommissioning Aqua only once confidence is established, the organisation achieves measured modernisation without increasing risk.
+
+Final one-line summary (for executives)
+
+Wiz becomes the common image scanning and risk visibility layer across cloud platforms, while Aqua is retired in a controlled, evidence-led manner.

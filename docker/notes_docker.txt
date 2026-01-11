@@ -1,0 +1,3 @@
+docker exec -it crazy_wozniak sh -lc "netstat -tlnp || ss -tlnp"
+
+docker exec -it xenodochial_bhabha sh -lc "ls -la"

@@ -1,0 +1,63 @@
+Option B Implementation Design – Wiz On-Prem Kubernetes Connector
+1. Purpose of This Document
+This document defines the detailed implementation design for Option B: deploying a Wiz connector within on-premises Kubernetes environments to replace Aqua Security scanners while preserving existing CI/CD pipelines through Cyberflow. The focus is on secure enablement of outbound connectivity to Wiz SaaS in a banking and regulated environment.
+
+2. Architectural Intent
+Option B is designed to keep scanning control on-prem while treating Wiz SaaS as a controlled analytics endpoint only. There is no inbound connectivity from Wiz, no direct SaaS access to internal registries, and no direct pipeline-to-SaaS integration. Cyberflow remains the orchestration and policy enforcement layer.
+
+3. High-Level Architecture Overview
+The Wiz connector is deployed into a dedicated on-prem Kubernetes namespace. Cyberflow communicates internally with the connector to initiate scans. The connector pulls images from Nexus and forwards scan artifacts and metadata to Wiz SaaS over a tightly controlled outbound network path.
+
+4. Deployment Model
+- Dedicated Kubernetes namespace (e.g. security-wiz)
+- Dedicated service account with minimal RBAC
+- No externally exposed services
+- NetworkPolicies restricting east-west traffic
+- Resource limits to prevent denial-of-service conditions
+
+5. Integration with Cyberflow
+Cyberflow continues to be invoked by CI/CD pipelines without modification. Cyberflow submits scan requests to the Wiz connector via an internal service endpoint and receives normalised scan results. This preserves existing pipeline contracts and exit code behaviour.
+
+6. Outbound Egress Security Model
+All outbound connectivity from the Wiz connector is routed through a central enterprise egress control layer (firewall or proxy). Direct internet access from Kubernetes nodes is prohibited.
+
+7. Egress Control Requirements
+- Allow outbound traffic only to Wiz SaaS FQDNs
+- Restrict protocol to TCP 443
+- Deny all other internet destinations
+- Enforce DNS-based allowlisting
+- Log all egress traffic for audit purposes
+
+8. TLS and Transport Security
+Outbound TLS connections to Wiz SaaS are either passed through without inspection or inspected based on enterprise policy. Any TLS inspection requirements must be validated for compatibility with Wiz prior to enforcement. This decision is documented and approved by security governance.
+
+9. Authentication and Secrets Management
+Wiz API credentials are stored in Kubernetes Secrets backed by an enterprise secrets manager or HSM. Secrets are accessible only to the Wiz connector service account and rotated automatically. No credentials are stored in CI/CD pipelines.
+
+10. Kubernetes Security Hardening
+- Namespace isolation
+- Pod Security Standards enforcement
+- No privileged containers unless explicitly approved
+- No hostPath mounts
+- NetworkPolicies limiting egress and east-west access
+- Audit logging enabled
+
+11. Observability and Audit
+The following logs must be retained:
+- Egress firewall/proxy logs
+- Wiz connector operational logs
+- Cyberflow scan request and decision logs
+
+Logs must support correlation from image digest to scan result and pipeline decision.
+
+12. Failure Modes and Safe Behaviour
+If Wiz SaaS is unavailable:
+- Non-production environments fail open with warning
+- Production promotion fails closed or requires manual override
+
+If outbound egress is blocked, the Wiz connector reports scan failure explicitly to Cyberflow.
+
+13. Regulatory and Risk Positioning
+The design ensures that Wiz SaaS does not initiate inbound connections, internal registries remain private, and all data movement is outbound, restricted, logged, and revocable. Control decisions remain internal to Cyberflow, satisfying regulatory expectations.
+14. Conclusion
+Option B provides a controlled, auditable, and regulator-friendly approach to replacing Aqua scanners with Wiz while maintaining on-prem isolation and delivery stability. It is suitable for banking environments with strict network and data control requirements.
