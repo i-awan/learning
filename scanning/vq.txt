@@ -1,0 +1,190 @@
+Wiz Vendor Clarification – Outpost Lite & Private Registry Scanning
+1. Outpost Lite – Deployment & Architecture
+
+Deployment model
+
+Is Wiz Outpost Lite deployed as a Kubernetes DaemonSet by default?
+
+Are there scenarios where it runs as a Deployment instead?
+
+Does Outpost Lite require cluster-admin permissions, or can it run with namespace-scoped RBAC?
+
+Namespace & isolation
+
+Can Outpost Lite be deployed in a dedicated namespace with strict NetworkPolicies?
+
+Does it require access to the Kubernetes API server beyond read-only metadata?
+
+2. Connectivity & Network Security (Critical)
+
+Connectivity direction
+
+Does Outpost Lite operate using outbound-only connectivity to Wiz SaaS?
+
+Does Wiz SaaS ever initiate inbound connections into the customer environment?
+
+Protocols & ports
+
+What protocols and ports are required (e.g. TCP 443 only)?
+
+Are any non-HTTPS or long-lived connections required?
+
+Destination control
+
+Can all outbound traffic be restricted to a documented list of FQDNs?
+
+Are IP allowlists supported, and how frequently do they change?
+
+Proxy support
+
+Is Outpost Lite compatible with enterprise HTTP(S) proxies?
+
+Is authentication to the proxy supported?
+
+3. Private Registry & Image Scanning (Key Design Question)
+
+Nexus registry support
+
+Does Outpost Lite support authenticated scanning of images stored in a private Nexus registry?
+
+Can it scan images not yet deployed to Kubernetes (registry-only scanning)?
+
+Credential handling
+
+How are registry credentials provided (Kubernetes Secret, vault integration)?
+
+Are credentials stored or cached on disk?
+
+Scan scope
+
+Is scanning:
+
+Layer-based image scanning?
+
+Metadata-only?
+
+Dependent on image presence on nodes?
+
+Air-gapped / restricted environments
+
+Can Outpost Lite operate in environments where:
+
+Registries are private
+
+Direct SaaS access is limited
+
+Only metadata is allowed to leave the environment?
+
+4. Data Flow & Data Residency
+
+Data sent to Wiz SaaS
+
+What exact data types are sent back to Wiz SaaS?
+
+CVE IDs?
+
+Image digests?
+
+File hashes?
+
+Layer contents?
+
+Is image content ever transmitted?
+
+Data retention
+
+Where are scan results stored?
+
+Can data retention be configured or limited?
+
+5. Authentication & Secrets Management
+
+Wiz authentication
+
+How does Outpost Lite authenticate to Wiz SaaS?
+
+Are tokens:
+
+Scoped?
+
+Rotatable?
+
+Revocable without redeploy?
+
+Secrets rotation
+
+Is automatic rotation supported?
+
+What is the expected operational model for rotation?
+
+6. Performance, Scale & Failure Modes
+
+Concurrency & scale
+
+How many images can Outpost Lite scan concurrently?
+
+Are there recommended resource limits per node?
+
+Failure behaviour
+
+What happens if:
+
+Wiz SaaS is unavailable?
+
+Egress is blocked?
+
+A scan times out?
+
+Are partial or stale results ever returned?
+
+7. Operational & Lifecycle Management
+
+Upgrade model
+
+How are Outpost Lite upgrades delivered?
+
+Can upgrades be controlled or deferred?
+
+Observability
+
+What logs and metrics are available locally?
+
+Can logs be forwarded to SIEM?
+
+Support boundaries
+
+What operational responsibilities remain with the customer?
+
+What is Wiz’s support responsibility for Outpost Lite?
+
+8. Compliance & Assurance
+
+Certifications
+
+Is Outpost Lite covered under Wiz’s:
+
+SOC 2
+
+ISO 27001
+
+Other attestations?
+
+Regulatory posture
+
+Are there reference customers using Outpost Lite in banking or regulated environments?
+
+Are architecture patterns available for regulator review?
+
+9. Licensing & Entitlements
+
+Licensing
+
+Is Outpost Lite included in standard Wiz licensing?
+
+Are there limitations on:
+
+Number of clusters
+
+Number of images
+
+Scan frequency?
