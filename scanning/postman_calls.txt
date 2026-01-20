@@ -1,0 +1,315 @@
+Using Insomnia + raw curl first is exactly what I’d recommend before writing any Python. It lets you:
+
+Prove network + auth + API behavior
+
+See real GraphQL schemas
+
+Avoid guessing mutation names
+
+De-risk coding work
+
+Below is a step-by-step, copy-paste friendly guide you can use in Insomnia and on the CLI.
+
+Step-by-step: Calling Wiz API with curl / Insomnia
+
+We’ll do this in the exact order you should test.
+
+0. What you need before you start
+
+From Wiz (or your tenant admin):
+
+API region
+Example: eu1, us1
+
+OAuth token endpoint
+
+Client ID / Client Secret
+
+GraphQL endpoint
+
+Typical endpoints (examples, adjust to your tenant):
+
+TOKEN_URL=https://auth.app.wiz.io/oauth/token
+GRAPHQL_URL=https://api.eu1.app.wiz.io/graphql
+
+1. Get an access token (OAuth client credentials)
+curl
+curl -X POST "$TOKEN_URL" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=client_credentials" \
+  -d "client_id=$WIZ_CLIENT_ID" \
+  -d "client_secret=$WIZ_CLIENT_SECRET"
+
+Expected response
+{
+  "access_token": "eyJhbGciOiJ...",
+  "token_type": "Bearer",
+  "expires_in": 3600
+}
+
+
+✔️ If this fails
+
+Network / proxy / TLS issue
+
+Wrong IdP endpoint
+
+Bad credentials
+
+Fix this before going further.
+
+Insomnia setup
+
+Method: POST
+
+URL: https://auth.app.wiz.io/oauth/token
+
+Body type: Form URL Encoded
+
+Fields:
+
+grant_type=client_credentials
+
+client_id=...
+
+client_secret=...
+
+2. Test GraphQL connectivity (sanity check)
+
+Before triggering scans, confirm you can talk to GraphQL.
+
+curl
+curl -X POST "$GRAPHQL_URL" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "query { __typename }"
+  }'
+
+Expected response
+{
+  "data": {
+    "__typename": "Query"
+  }
+}
+
+
+✔️ This proves:
+
+Token is valid
+
+GraphQL endpoint reachable
+
+No proxy / firewall issues
+
+3. Discover available operations (critical step)
+
+This is how you avoid guessing mutation names.
+
+Introspection query (Insomnia recommended)
+query IntrospectionQuery {
+  __schema {
+    mutationType {
+      fields {
+        name
+      }
+    }
+    queryType {
+      fields {
+        name
+      }
+    }
+  }
+}
+
+curl version
+curl -X POST "$GRAPHQL_URL" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d @- <<EOF
+{
+  "query": "query { __schema { mutationType { fields { name } } queryType { fields { name } } } }"
+}
+EOF
+
+What you’re looking for
+
+Mutation names like:
+
+createScanJob
+
+createImageScan
+
+requestScan
+
+startImageScan
+
+Query names like:
+
+scanJob
+
+scanJobs
+
+imageScan
+
+findings
+
+📌 This step tells you EXACTLY what Wiz supports in your tenant.
+
+4. Trigger an image scan job (example stub)
+
+Once you identify the correct mutation name, test it.
+
+Example GraphQL mutation (placeholder name)
+mutation CreateImageScan($input: CreateImageScanInput!) {
+  createImageScan(input: $input) {
+    jobId
+    status
+  }
+}
+
+curl
+curl -X POST "$GRAPHQL_URL" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation CreateImageScan($input: CreateImageScanInput!) { createImageScan(input: $input) { jobId status } }",
+    "variables": {
+      "input": {
+        "image": "nexus.internal/app/my-image@sha256:abc123",
+        "environment": "onprem-k8s-outpost",
+        "scanType": "IMAGE"
+      }
+    }
+  }'
+
+Expected response
+{
+  "data": {
+    "createImageScan": {
+      "jobId": "scan-12345",
+      "status": "QUEUED"
+    }
+  }
+}
+
+
+📌 Save the jobId — everything else keys off this.
+
+5. Poll scan job status
+GraphQL query
+query ScanJob($id: ID!) {
+  scanJob(id: $id) {
+    id
+    status
+    createdAt
+    startedAt
+    completedAt
+    errorMessage
+  }
+}
+
+curl
+curl -X POST "$GRAPHQL_URL" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "query ScanJob($id: ID!) { scanJob(id: $id) { id status createdAt startedAt completedAt errorMessage } }",
+    "variables": {
+      "id": "scan-12345"
+    }
+  }'
+
+Status values you’ll likely see
+
+QUEUED
+
+RUNNING
+
+COMPLETED
+
+FAILED
+
+6. Fetch scan findings
+GraphQL query (example)
+query ScanFindings($id: ID!) {
+  scanJob(id: $id) {
+    status
+    findings {
+      vulnerabilities {
+        cveId
+        severity
+        packageName
+        installedVersion
+        fixedVersion
+      }
+    }
+  }
+}
+
+curl
+curl -X POST "$GRAPHQL_URL" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "query ScanFindings($id: ID!) { scanJob(id: $id) { status findings { vulnerabilities { cveId severity packageName installedVersion fixedVersion } } } }",
+    "variables": {
+      "id": "scan-12345"
+    }
+  }'
+
+
+This response is what your internal scanner will normalise into pass/warn/fail.
+
+7. What to capture before writing Python
+
+Before you code, capture and document:
+
+✅ Exact mutation name for scan creation
+
+✅ Required input fields
+
+✅ Required vs optional fields
+
+✅ Status enum values
+
+✅ Findings schema
+
+✅ Typical scan duration
+
+✅ Error responses (auth failure, invalid image, etc.)
+
+This becomes your integration contract.
+
+How Insomnia helps (recommended)
+
+In Insomnia you can:
+
+Save each request as:
+
+Auth – Get Token
+
+GraphQL – Introspection
+
+Scan – Create Job
+
+Scan – Get Status
+
+Scan – Get Findings
+
+Use environment variables:
+
+{{access_token}}
+
+{{graphql_url}}
+
+Share the workspace with teammates
+
+One-liner you can use in design reviews
+
+“We validated Wiz integration using raw GraphQL calls via Insomnia and curl to confirm authentication, job creation, polling, and findings retrieval before implementing the Python client.”
+
+
+
+
+

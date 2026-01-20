@@ -1,0 +1,561 @@
+1) Define the integration contract (don’t code yet)
+
+Inputs the internal scanner must accept (from pipelines/users)
+
+image reference formats: repo:tag, repo@sha256:digest
+
+environment: dev/test/prod
+
+scan intent: “promotion gate” vs “informational”
+
+Outputs the internal scanner must return
+
+exit codes: pass/warn/fail + “scan unavailable”
+
+normalized JSON schema (keep compatible with current pipelines)
+
+human-readable summary
+
+Deliverable: an API/CLI contract doc + example payloads.
+
+2) Confirm the Wiz API capabilities you need (RFI / PoC)
+
+You need to confirm (and test) you can do the following via Wiz API:
+
+Create/trigger a scan job
+
+Query job status by job ID
+
+Retrieve findings by:
+
+job ID
+
+image digest
+
+repository/image name
+
+Determine “policy pass/fail” or derive it from findings
+
+Deliverable: a minimal “hello world” script proving job creation + result retrieval.
+
+3) Decide synchronous vs asynchronous behavior (major design choice)
+
+Because CI/CD often expects quick responses, decide:
+
+Option A: Synchronous (pipeline waits)
+
+internal scanner triggers scan and polls until complete
+
+returns pass/fail to pipeline in same job
+
+Risks: long pipelines, timeouts, SaaS latency.
+
+Option B: Asynchronous (recommended for scale)
+
+internal scanner triggers scan and returns quickly with:
+
+scan job ID
+
+“pending”
+
+promotion/deploy pipeline later blocks until scan complete
+
+Better: decouples build from scan latency.
+
+Deliverable: agreed operating model + timeouts.
+
+4) Authentication and secrets model (banking-grade)
+
+Choose auth method:
+
+Wiz API token stored in a secrets manager (preferred)
+
+Never store secrets in:
+
+pipeline variables
+
+git repos
+
+Implement:
+
+rotation plan
+
+audit logging on access
+
+If you have egress proxy:
+
+validate the client supports proxy settings
+
+Deliverable: secrets handling design + rotation/runbook.
+
+5) Network path and security controls (egress)
+
+Identify where internal scanner runs:
+
+on-prem runners? k8s? VMs?
+
+Define outbound requirements:
+
+TCP 443 only
+
+FQDN allowlist
+
+proxy routing
+
+DNS resolution path
+
+Logging:
+
+proxy/firewall logs for all outbound calls
+
+internal scanner logs with correlation IDs
+
+Deliverable: network rule request + test plan.
+
+6) Error handling and failure mode assessment (must-have)
+
+Design explicit behaviors for:
+
+Wiz API down
+
+auth failure (token revoked/expired)
+
+rate limiting / throttling
+
+scan job stuck / timeouts
+
+partial results
+
+Define per environment:
+
+dev/test: fail-open with warnings?
+
+prod promotion: fail-closed?
+
+Deliverable: failure-mode matrix + fallback strategy.
+
+7) Idempotency & concurrency (avoid race conditions)
+
+Internal scanner must handle:
+
+Same image submitted multiple times
+
+Multiple scans in flight
+
+Key choices:
+
+Use digest as the primary identity
+
+Store mapping:
+
+digest → latest job ID/status
+
+Implement idempotency keys if Wiz supports it
+
+Ensure “correct result for correct request”
+
+no “latest scan wins” bugs
+
+Deliverable: concurrency model + state store choice.
+
+8) State management (where do you store job tracking?)
+
+You’ll likely need a lightweight store for:
+
+job ID
+
+image digest
+
+requester
+
+timestamps
+
+status
+
+decision outcome
+
+Options:
+
+Postgres (if already used)
+
+DynamoDB (if in AWS)
+
+Redis (short-lived cache)
+
+Even a durable queue if async
+
+Deliverable: data model + retention policy.
+
+9) Policy mapping (severity → pass/fail)
+
+Decide how you turn Wiz findings into the pipeline decision:
+
+Block on Critical always
+
+Block on High in prod, warn in dev/test
+
+exceptions/waivers
+
+Also decide whether policy is:
+
+Implemented in internal scanner (initially)
+
+Migrated to Wiz policies later
+
+Deliverable: policy table + waiver workflow.
+
+10) Observability and auditability (non-negotiable in banking)
+
+Implement:
+
+structured logs (JSON)
+
+correlation IDs:
+
+pipeline run ID
+
+image digest
+
+Wiz job ID
+
+metrics:
+
+scan duration
+
+success rate
+
+failure reasons
+
+API latency
+
+audit trail:
+
+who requested scan
+
+who approved promotion
+
+what result was used
+
+Deliverable: logging/metrics spec + dashboards.
+
+11) Security testing plan (before production)
+
+Unit tests:
+
+payload validation
+
+policy evaluation
+
+Integration tests:
+
+mock Wiz API
+
+real Wiz tenant in non-prod
+
+Negative tests:
+
+wrong token
+
+blocked egress
+
+throttling
+
+Pen-test considerations:
+
+no secret leakage in logs
+
+TLS validation
+
+Deliverable: test plan + success criteria.
+
+12) Rollout strategy (how you ship this safely)
+
+Feature flag:
+
+“Aqua backend” vs “Wiz backend”
+
+Parallel run mode:
+
+call both and compare results (non-blocking)
+
+Gradual enablement:
+
+dev → test → prod promotion
+
+Clear rollback:
+
+toggle flag, no pipeline changes
+
+Deliverable: phased rollout plan + rollback runbook.
+
+What I’d ask the dev team to produce (deliverables)
+
+API integration prototype (trigger + poll + results)
+
+Contract doc (input/output + exit codes)
+
+Failure-mode matrix
+
+Policy mapping table
+
+State store design
+
+Logging/metrics plan
+
+Security review packet (egress + secrets + audit)
+
+One-liner you can use in the assessment
+
+“Before coding, we assess API capabilities, auth/secrets, egress controls, async job handling, idempotency, policy mapping, failure modes, and auditability to ensure the integration is resilient, compliant, and does not disrupt existing pipelines.”
+
+If you want, I can turn this into a formal technical assessment checklist (tables, owners, acceptance criteria) that you can paste into Confluence or attach to the IA.
+
+Lets go a bit low level on the internal scanner talking to wiz api to trigger a scan. Based on what you can find on the wiz api. Define a series of stub wiz api calls triggered by the internal scanner. The internal scanner is developed in python. 
+Thought for 58s
+
+Below is a low-level (but still “stub / safe”) set of Wiz API interactions your Python internal scanner can implement.
+
+Two things we can confirm from public integration docs:
+
+Wiz exposes a GraphQL API endpoint of the form: https://api.<region>.app.wiz.io/graphql
+
+Wiz API auth commonly uses an OAuth token endpoint that depends on your tenant IdP:
+
+Cognito: https://auth.app.wiz.io/oauth/token
+
+Auth0: https://auth.wiz.io/oauth/token
+
+What’s not publicly stable is the exact GraphQL mutation name for “trigger an image scan job” in the Outpost Lite job-queue model. In practice, teams discover it via the Wiz API Explorer / “every UI action maps to a GraphQL call” approach.
+
+So: I’ll give you a series of stub calls with placeholders for the mutation/query names, plus the exact “plumbing” (auth, GraphQL request shape, polling pattern) you can drop into your internal scanner.
+
+Stub API call sequence (internal scanner → Wiz SaaS)
+Call 0 — Resolve tenant endpoints
+
+Inputs (config):
+
+WIZ_API_URL = "https://api.<region>.app.wiz.io/graphql"
+
+WIZ_TOKEN_URL = "https://auth.app.wiz.io/oauth/token" (or Auth0 variant)
+
+client_id, client_secret (service account creds)
+
+Call 1 — Get OAuth access token (client credentials)
+
+POST WIZ_TOKEN_URL
+Purpose: obtain a short-lived bearer token for GraphQL calls.
+
+Call 2 — Submit a “scan request” mutation (job creation)
+
+POST WIZ_API_URL (GraphQL)
+Purpose: create a scan job for a specific image (tag or digest), and optionally specify execution environment (Outpost/cluster).
+
+Returns:
+
+jobId (or similar)
+
+initial status
+
+This is the key mutation you’ll confirm via Wiz API Explorer / vendor docs.
+
+Call 3 — Poll job status
+
+GraphQL query by jobId:
+
+status (QUEUED/RUNNING/COMPLETED/FAILED)
+
+timestamps
+
+error info if failed
+
+Call 4 — Fetch results/findings for that job/image
+
+GraphQL query for findings:
+
+vulnerability list (CVE, severity, package, fix version)
+
+policy outcome if Wiz provides it
+
+report URL (optional)
+
+Call 5 — Internal scanner normalises + enforces policy
+
+map findings → PASS/WARN/FAIL
+
+return pipeline-compatible schema/exit code
+
+Python skeleton (requests + GraphQL)
+import time
+import requests
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
+
+@dataclass
+class WizConfig:
+    api_url: str          # e.g. https://api.eu1.app.wiz.io/graphql
+    token_url: str        # e.g. https://auth.app.wiz.io/oauth/token
+    client_id: str
+    client_secret: str
+    timeout_s: int = 30
+
+class WizClient:
+    def __init__(self, cfg: WizConfig):
+        self.cfg = cfg
+        self._access_token: Optional[str] = None
+
+    def authenticate(self) -> str:
+        """
+        Stub: OAuth client_credentials grant.
+        Token URL varies by tenant IdP (Cognito vs Auth0).
+        """
+        resp = requests.post(
+            self.cfg.token_url,
+            data={
+                "grant_type": "client_credentials",
+                "client_id": self.cfg.client_id,
+                "client_secret": self.cfg.client_secret,
+                # Some tenants require an 'audience' or similar field.
+                # Add it here if Wiz provides it for your tenant.
+            },
+            timeout=self.cfg.timeout_s,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        self._access_token = data["access_token"]
+        return self._access_token
+
+    def graphql(self, query: str, variables: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        if not self._access_token:
+            self.authenticate()
+
+        resp = requests.post(
+            self.cfg.api_url,
+            json={"query": query, "variables": variables or {}},
+            headers={"Authorization": f"Bearer {self._access_token}"},
+            timeout=self.cfg.timeout_s,
+        )
+
+        # Handle token expiry gracefully
+        if resp.status_code == 401:
+            self.authenticate()
+            resp = requests.post(
+                self.cfg.api_url,
+                json={"query": query, "variables": variables or {}},
+                headers={"Authorization": f"Bearer {self._access_token}"},
+                timeout=self.cfg.timeout_s,
+            )
+
+        resp.raise_for_status()
+        payload = resp.json()
+        if "errors" in payload:
+            raise RuntimeError(f"Wiz GraphQL errors: {payload['errors']}")
+        return payload["data"]
+
+    # ---- STUBS YOU WILL WIRE TO REAL WIZ GRAPHQL OPERATIONS ----
+
+    def create_image_scan_job(self, image_ref: str, registry: str, environment: str) -> str:
+        """
+        image_ref: repo:tag OR repo@sha256:digest (prefer digest for immutability)
+        registry:  e.g. "nexus-prod" or hostname
+        environment: e.g. "onprem-k8s-outpost-lite"
+        """
+        mutation = """
+        mutation CreateImageScanJob($input: CreateImageScanJobInput!) {
+          createImageScanJob(input: $input) {
+            jobId
+            status
+          }
+        }
+        """
+        variables = {
+            "input": {
+                "imageRef": image_ref,
+                "registry": registry,
+                "environment": environment,
+                # optional: "priority": "HIGH"
+                # optional: "correlationId": "<pipeline-run-id>"
+            }
+        }
+        data = self.graphql(mutation, variables)
+        return data["createImageScanJob"]["jobId"]
+
+    def get_scan_job_status(self, job_id: str) -> Dict[str, Any]:
+        query = """
+        query ScanJob($id: ID!) {
+          scanJob(id: $id) {
+            id
+            status
+            createdAt
+            startedAt
+            completedAt
+            errorMessage
+          }
+        }
+        """
+        return self.graphql(query, {"id": job_id})["scanJob"]
+
+    def get_scan_findings(self, job_id: str) -> Dict[str, Any]:
+        query = """
+        query ScanFindings($id: ID!) {
+          scanJob(id: $id) {
+            id
+            status
+            findings {
+              vulnerabilities {
+                cveId
+                severity
+                packageName
+                installedVersion
+                fixedVersion
+              }
+            }
+            reportUrl
+          }
+        }
+        """
+        return self.graphql(query, {"id": job_id})["scanJob"]
+
+    def wait_for_completion(self, job_id: str, poll_s: int = 10, max_wait_s: int = 900) -> Dict[str, Any]:
+        start = time.time()
+        while True:
+            job = self.get_scan_job_status(job_id)
+            if job["status"] in ("COMPLETED", "FAILED", "CANCELED"):
+                return job
+            if time.time() - start > max_wait_s:
+                raise TimeoutError(f"Scan job {job_id} did not complete within {max_wait_s}s")
+            time.sleep(poll_s)
+
+What you need to replace (once you have tenant details)
+
+CreateImageScanJobInput, createImageScanJob, scanJob, findings field paths
+These are placeholders.
+
+How you get the real names quickly:
+
+In the Wiz UI, trigger the same action you want (scan/job/report), then use their API explorer / introspection approach to see the underlying GraphQL operation.
+
+Or ask Wiz support for the exact GraphQL mutation/query names for:
+
+job creation
+
+job status
+
+findings retrieval
+
+Design notes (important for your internal scanner)
+
+Prefer scanning by digest (repo@sha256:...) to avoid tag drift.
+
+Treat scan as async:
+
+internal scanner returns jobId immediately OR blocks with a timeout
+
+Add a correlationId (pipeline run ID) into the job request (if supported), so you can trace end-to-end.
+
+Implement rate limit + retry behavior (429/5xx) with exponential backoff.
+
+Log only:
+
+jobId, digest, status, decision
+
+never tokens or secrets

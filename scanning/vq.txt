@@ -1,6 +1,8 @@
 Wiz Vendor Clarification – Outpost Lite & Private Registry Scanning
 1. Outpost Lite – Deployment & Architecture
 
+
+
 Deployment model
 
 Is Wiz Outpost Lite deployed as a Kubernetes DaemonSet by default?
