@@ -58,3 +58,114 @@ This SDD provides a secure, scalable, and regulator-friendly integration between
 Disclaimer: Placement of Wiz Outpost in AWS vs On-Premises
 
 Note: While the Solution Design Diagram illustrates an option where Wiz Outpost is deployed in a bank-owned AWS account, this deployment model is not the preferred option for a regulated banking environment. The recommended and preferred deployment model is to host Wiz Outpost on-premises, within the bank’s internal Kubernetes environment.
+
+
+
+Disclaimer: Placement of Wiz Outpost in AWS vs On-Premises
+
+Note: While the Solution Design Diagram illustrates an option where Wiz Outpost is deployed in a bank-owned AWS account, this deployment model is not the preferred option for a regulated banking environment. The recommended and preferred deployment model is to host Wiz Outpost on-premises, within the bank’s internal Kubernetes environment.
+
+Rationale for Preference of On-Prem Deployment
+1. Network Security and Trust Boundaries
+
+In a banking environment, on-premises and cloud environments are treated as separate trust zones, even when the cloud account is fully bank-owned.
+
+Deploying Wiz Outpost in AWS introduces a requirement for cross-zone access between AWS and on-prem resources (e.g. image registries or workloads), which:
+
+Expands the attack surface
+
+Increases firewall and routing complexity
+
+Requires additional network security exceptions
+
+An on-prem Outpost allows all sensitive interactions (image access, runtime inspection) to remain entirely within the internal trust boundary, with outbound-only connectivity to Wiz SaaS.
+
+2. Inbound Connectivity Avoidance
+
+Banking network policy typically disallows inbound connectivity into on-prem environments, including connections initiated from cloud platforms.
+
+An AWS-hosted Outpost scanning on-prem images may require:
+
+Inbound firewall rules
+
+Bi-directional network paths (VPN / Direct Connect)
+
+An on-prem Outpost avoids this entirely by:
+
+Initiating all connections outbound
+
+Aligning with zero-trust and default-deny network postures
+
+3. Data Residency and Exposure Minimisation
+
+Although Wiz does not exfiltrate image data to SaaS, deploying Outpost in AWS can still:
+
+Increase perceived data exposure
+
+Trigger additional regulatory scrutiny around cross-environment data movement
+
+Hosting Outpost on-prem ensures:
+
+Image layers and runtime metadata never leave the data centre
+
+Only vulnerability metadata (CVEs, severity, timestamps) is transmitted externally
+
+4. Performance and Latency Considerations
+
+Scanning images from on-prem registries (e.g. Nexus) via an AWS-hosted Outpost introduces:
+
+Additional network hops
+
+Dependency on WAN/Direct Connect performance
+
+An on-prem Outpost provides:
+
+Lower latency access to registries and nodes
+
+Faster scan execution
+
+More predictable performance characteristics
+
+5. Operational Simplicity
+
+An on-prem deployment:
+
+Simplifies network design
+
+Reduces the number of environments requiring security approval
+
+Minimises operational dependencies between infrastructure teams
+
+AWS-based deployment typically requires coordination across:
+
+Cloud security
+
+Network
+
+Platform
+
+On-prem infrastructure teams
+
+6. Regulatory and Audit Posture
+
+Auditors and regulators generally favour designs where:
+
+Security tooling runs as close as possible to the workloads being inspected
+
+Cross-environment dependencies are minimised
+
+An on-prem Outpost deployment is easier to:
+
+Explain
+
+Justify
+
+Evidence during audits
+
+Summary Position
+
+While deploying Wiz Outpost in a bank-owned AWS account is technically feasible, it is considered a non-preferred implementation option. For security, network simplicity, performance predictability, and regulatory alignment, the preferred deployment model is to host Wiz Outpost on-premises, within the same environment as the workloads and registries being scanned, using outbound-only connectivity to Wiz SaaS.
+
+
+
+While deploying Wiz Outpost in a bank-owned AWS account is technically feasible, an on-premises deployment is generally preferred in a banking environment. Hosting Outpost on-prem keeps image access and scanning local to the source registries and workloads, avoiding unnecessary cross-environment data movement and potential bandwidth overhead associated with copying image layers over WAN or Direct Connect links. From a security perspective, an on-prem deployment better aligns with established trust boundaries and default-deny network postures by requiring only outbound connectivity to Wiz SaaS, reducing complexity and minimising exposure introduced by cross-zone dependencies
