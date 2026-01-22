@@ -1,0 +1,55 @@
+
+
+
+SDD Summary – Internal Scanner with Wiz (Periodic and On-Demand Scanning)
+This document summarises the Solution Design Diagram (SDD) for integrating an internal scanning tool ('internal scanner') with Wiz for container image and workload security scanning. The design supports both periodic and on-demand scanning, with a strong emphasis on security, network controls, and banking-grade trust boundaries.
+1. Architecture Overview
+- The internal scanner acts as a policy enforcement and orchestration layer.
+- Wiz provides the scanning capability via its SaaS control plane and distributed scanners (Outpost).
+- Wiz Outpost is deployed in a bank-owned AWS account and executes scans (data plane).
+- Wiz SaaS acts as the control plane and findings repository.
+- All communication from on-premises is outbound-only.
+2. Trust Zones
+On-Prem / Bank Internal Network:
+- CI/CD pipelines or users (callers)
+- Internal scanner (policy enforcer)
+- Enterprise egress controls (proxy, firewall, DNS allowlisting)
+
+AWS (Bank-Owned Trust Zone):
+- Wiz Outpost / Sensor responsible for executing scans
+- AWS-native network controls (VPC, security groups, egress gateways)
+
+Internet / Wiz SaaS (External Zone):
+- Wiz SaaS API (GraphQL/REST)
+- Job queue and orchestration
+- Centralised findings store
+3. Scanning Models
+Periodic Scanning:
+- Wiz Outpost scans workloads/images on a scheduled basis.
+- Findings (CVEs, severity, metadata) are uploaded to Wiz SaaS.
+- Results are indexed by image digest with scan timestamps.
+
+On-Demand Scanning:
+- Internal scanner submits a scan request to Wiz SaaS.
+- Wiz SaaS queues the job and assigns it to the AWS-based Outpost.
+- Outpost pulls the image or metadata, performs the scan, and uploads findings.
+4. Findings Retrieval and Policy Enforcement
+- Internal scanner queries Wiz SaaS for findings using image digest or latest scan reference.
+- Scan freshness (staleness) is evaluated based on environment policy (e.g., prod ≤ 24h).
+- Results are normalised into PASS / WARN / FAIL decisions.
+- Callers experience a single logical request/response, even if multiple Wiz API calls occur internally.
+5. Network and Security Considerations
+- No inbound connectivity into on-premises is required.
+- All traffic from on-prem to Wiz SaaS is outbound-only over HTTPS (TCP 443).
+- Egress traffic is restricted using proxies, firewalls, and FQDN allowlists.
+- Wiz Outpost communicates outbound to Wiz SaaS; it does not accept inbound connections.
+- Secrets (API tokens) are stored in enterprise secrets managers and never exposed in pipelines.
+- Least-privilege service identities are used for Wiz API and Outpost access.
+- Full audit logging is enabled for egress traffic, scan requests, and policy decisions.
+6. Banking and Regulatory Alignment
+- Clear separation of trust zones (on-prem, AWS, SaaS).
+- Outbound-only connectivity aligns with zero-trust and bank network policies.
+- No container images or sensitive data are transferred to Wiz SaaS; only metadata and findings.
+- Design supports auditability, traceability, and controlled promotion decisions.
+7. Conclusion
+This SDD provides a secure, scalable, and regulator-friendly integration between internal scanning processes and Wiz. By combining periodic and on-demand scanning, enforcing strict network controls, and preserving existing pipeline interfaces, the design enables adoption of Wiz without disrupting established CI/CD workflows.
