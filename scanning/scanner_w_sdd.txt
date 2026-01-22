@@ -53,3 +53,8 @@ On-Demand Scanning:
 - Design supports auditability, traceability, and controlled promotion decisions.
 7. Conclusion
 This SDD provides a secure, scalable, and regulator-friendly integration between internal scanning processes and Wiz. By combining periodic and on-demand scanning, enforcing strict network controls, and preserving existing pipeline interfaces, the design enables adoption of Wiz without disrupting established CI/CD workflows.
+
+
+Disclaimer: Placement of Wiz Outpost in AWS vs On-Premises
+
+Note: While the Solution Design Diagram illustrates an option where Wiz Outpost is deployed in a bank-owned AWS account, this deployment model is not the preferred option for a regulated banking environment. The recommended and preferred deployment model is to host Wiz Outpost on-premises, within the bank’s internal Kubernetes environment.
