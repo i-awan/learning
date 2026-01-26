@@ -1,3 +1,63 @@
+The on-demand Wiz API calls we discussed (and the curl examples) are illustrative / hypothetical, showing what such an API could look like, not what Wiz definitively exposes today.
+
+Clear statement you can rely on
+
+Wiz does not currently expose a general-purpose, documented API that allows customers to trigger arbitrary on-demand image scans via API in the same way traditional scanner products do.
+
+What the curl examples actually represent
+
+They were meant to demonstrate:
+
+Authentication flow (OAuth2 → GraphQL)
+
+Network/security posture (outbound-only HTTPS)
+
+Logical integration pattern (job creation → status → findings)
+
+How your internal scanner would interact if/when such an API exists
+
+They are not guaranteed to map 1:1 to real Wiz mutations.
+
+So yes:
+
+✔️ They are conceptual examples
+
+❌ They are not confirmed Wiz API endpoints
+
+What Wiz actually supports today (important distinction)
+Supported / common
+
+Agentless, continuous scanning
+
+Cloud resources
+
+Workloads
+
+Images associated with workloads
+
+Periodic scanning
+
+Driven by sensors / integrations
+
+APIs to query findings
+
+CVEs
+
+image/workload context
+
+policy status
+
+Not generally supported (as of now)
+
+❌ “Scan this arbitrary image now” API
+
+❌ CI-style synchronous image scanning
+
+❌ Registry scan-on-demand without deployment context
+
+
+
+
 Using Insomnia + raw curl first is exactly what I’d recommend before writing any Python. It lets you:
 
 Prove network + auth + API behavior
