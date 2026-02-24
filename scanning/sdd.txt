@@ -5,3 +5,16 @@ The purpose of adopting Wiz is to standardise container and cloud security scann
 Problem Statement – Existing AquaSec Deployment
 
 The current Aqua Enterprise implementation relies on Kubernetes DaemonSet enforcers and a node-based licensing model, resulting in cost sensitivity to cluster growth and operational overhead related to agent lifecycle management. The existing pattern requires scan initiation via Aqua APIs, creating tighter coupling and potential scalability constraints in high-volume CI/CD environments. Additionally, the self-managed console database introduces retention and capacity management responsibilities. These factors limit scalability and increase operational complexity in elastic cloud environments, necessitating a more streamlined and context-driven security approach.
+
+
+
+
+Service Description & Purpose – Wiz Integration Replacement
+
+Wiz is a cloud-native security platform that provides continuous, agentless visibility across cloud infrastructure and container workloads, including vulnerability detection, cloud posture assessment, identity risk analysis, and contextual risk prioritisation. It integrates directly with cloud control planes and registries, reducing operational overhead associated with per-node agents while enabling scalable, multi-cloud coverage.
+
+The purpose of this proposal is not to introduce a new security service in isolation, but to replace the existing integration between the internal scanner and Aqua Enterprise with a new integration between the internal scanner and Wiz. Wiz will act as the upstream source of container vulnerability findings, while the internal scanner will continue to function as the central policy enforcement and CI/CD decision layer. Integration will be implemented via controlled API or event-driven ingestion, ensuring that the internal scanner remains the authoritative gating mechanism while decoupling it from agent-based runtime scan initiation.
+
+Problem Statement – Existing AquaSec Integration
+
+The current integration pattern requires the internal scanner to initiate scans through Aqua APIs, tightly coupling scan execution to CI/CD workflows. Aqua’s Kubernetes DaemonSet-based model introduces node-based licensing sensitivity, operational overhead from agent lifecycle management, and database capacity management responsibilities in a self-managed deployment. As cloud environments scale elastically, this model increases complexity and cost exposure. The proposed change seeks to modernise the integration layer by transitioning from scan-trigger-based API calls to a continuous findings-consumption model aligned with Wiz’s architecture, while preserving the internal scanner as the enterprise policy and decision authority.
