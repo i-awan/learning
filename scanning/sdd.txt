@@ -37,3 +37,21 @@ The current integration pattern requires the internal scanner to initiate scans 
 | Operations / SRE                  | Monitor Wiz API health and ingestion pipeline                               | Prevent CI/CD disruption due to SaaS API latency or outage                                              |
 | Security Operations (SOC)         | Validate parity between Aqua and Wiz findings during coexistence period     | Ensure no reduction in detection coverage during migration                                              |
 | Architecture Review Board         | Approve API integration change without altering security control intent     | Ensure governance continuity while modernising integration model                                        |
+
+
+
+
+| **Function**                               | **Description**                                                                                                                                                                              |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Findings Retrieval (Wiz API Integration)   | Internal scanner retrieves container vulnerability findings from Wiz via controlled API calls or via an internal ingestion pipeline. Replaces previous Aqua scan-result retrieval mechanism. |
+| Image Identity Resolution                  | Internal scanner resolves image tags to immutable image digests prior to querying Wiz, ensuring deterministic and auditable gating decisions.                                                |
+| Scan Freshness Validation                  | Internal scanner validates that Wiz findings meet defined freshness thresholds (e.g., scan age ≤ defined SLA) before issuing PASS/WARN/FAIL decisions.                                       |
+| Policy Evaluation Engine                   | Internal scanner applies enterprise security policy (severity thresholds, waiver rules, environment-based controls) to Wiz findings to determine gating outcome.                             |
+| CI/CD Decision Endpoint                    | Internal scanner continues to expose a synchronous API endpoint returning PASS/WARN/FAIL responses, insulating pipelines from direct dependency on Wiz APIs.                                 |
+| Provider Abstraction Layer                 | Implementation of a pluggable provider model enabling replacement of Aqua API calls with Wiz API calls without changing external internal scanner contracts.                                 |
+| Event-Driven Findings Ingestion (Optional) | Support for asynchronous ingestion of Wiz findings via adapter/Kafka model to improve scalability and remove SaaS dependency from real-time CI/CD gates.                                     |
+| Audit & Evidence Referencing               | Internal scanner stores decision metadata and references to Wiz findings to support traceability, regulatory reporting, and audit requirements.                                              |
+| Error Handling & Fallback Logic            | Defined behaviour when Wiz findings are unavailable (e.g., PENDING, FAIL in prod, WARN in non-prod), ensuring deterministic outcomes during SaaS outages or delays.                          |
+| Dual-Run / Coexistence Mode                | Capability to query both Aqua and Wiz during transition phase to validate findings parity prior to full cutover.                                                                             |
+| Decision Snapshot Caching                  | Caching of latest validated decision per artifact/environment to reduce repeated Wiz API calls and improve response performance.                                                             |
+| Logging & Monitoring Integration           | Integration with enterprise logging and monitoring platforms to track API calls, decision outcomes, latency, and ingestion health.                                                           |
