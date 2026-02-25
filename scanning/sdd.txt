@@ -18,3 +18,22 @@ The purpose of this proposal is not to introduce a new security service in isola
 Problem Statement – Existing AquaSec Integration
 
 The current integration pattern requires the internal scanner to initiate scans through Aqua APIs, tightly coupling scan execution to CI/CD workflows. Aqua’s Kubernetes DaemonSet-based model introduces node-based licensing sensitivity, operational overhead from agent lifecycle management, and database capacity management responsibilities in a self-managed deployment. As cloud environments scale elastically, this model increases complexity and cost exposure. The proposed change seeks to modernise the integration layer by transitioning from scan-trigger-based API calls to a continuous findings-consumption model aligned with Wiz’s architecture, while preserving the internal scanner as the enterprise policy and decision authority.
+
+
+
+
+
+| **User Type (Team Type)**         | **Objective**                                                               | **Motivation**                                                                                          |
+| --------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| DevOps / CI/CD Team               | Continue invoking internal scanner API without workflow changes             | Preserve pipeline stability while replacing underlying Aqua API calls with Wiz-based findings retrieval |
+| Internal Scanner Engineering Team | Replace Aqua scan-initiation API calls with Wiz findings retrieval API      | Decouple scan triggering from CI/CD and align with Wiz continuous scanning model                        |
+| Internal Scanner Engineering Team | Implement Wiz Provider Adapter (abstracted API interface)                   | Maintain pluggable architecture to support parallel Aqua/Wiz during transition                          |
+| Platform Engineering (Kubernetes) | Remove dependency on Aqua scan-trigger requirement                          | Reduce runtime API coupling and support continuous scan-based gating                                    |
+| Cloud Security Team               | Retrieve container vulnerability findings from Wiz API                      | Standardise findings source and improve contextual risk prioritisation                                  |
+| Cloud Security Team               | Implement scan freshness validation logic (e.g., scan age threshold)        | Ensure production gating decisions are based on recent and validated findings                           |
+| Security Architecture Team        | Design event-driven ingestion (optional Kafka integration) for Wiz findings | Improve scalability and avoid direct SaaS dependency on every CI/CD gate call                           |
+| Application Teams                 | Receive consistent PASS/WARN/FAIL response from internal scanner            | Maintain a single policy enforcement point across SAST, DAST, and CONT                                  |
+| Risk & Compliance Team            | Maintain audit trail and evidence links post-migration                      | Ensure regulatory reporting continuity during transition from Aqua to Wiz                               |
+| Operations / SRE                  | Monitor Wiz API health and ingestion pipeline                               | Prevent CI/CD disruption due to SaaS API latency or outage                                              |
+| Security Operations (SOC)         | Validate parity between Aqua and Wiz findings during coexistence period     | Ensure no reduction in detection coverage during migration                                              |
+| Architecture Review Board         | Approve API integration change without altering security control intent     | Ensure governance continuity while modernising integration model                                        |
