@@ -39,6 +39,20 @@ The current integration pattern requires the internal scanner to initiate scans 
 | Architecture Review Board         | Approve API integration change without altering security control intent     | Ensure governance continuity while modernising integration model                                        |
 
 
+| **User Type (Team Type)**       | **Objective**                                                                                                                                                      | **Motivation**                                                                                                   |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| DevOps Engineer                 | As a DevOps engineer, I want to continue submitting my build artifacts to the internal scanner and receive a PASS/WARN/FAIL decision without changing my pipeline. | So that my CI/CD workflows remain stable while the backend scanning provider transitions from Aqua to Wiz.       |
+| Application Developer           | As a developer, I want vulnerability feedback on my container images before promotion to higher environments.                                                      | So that I can remediate security issues early and avoid production deployment failures.                          |
+| Cloud Security Analyst          | As a security analyst, I want container vulnerability findings sourced from Wiz to be evaluated consistently by the internal scanner.                              | So that enterprise policy is enforced uniformly across all environments and scan types.                          |
+| Platform Engineering (K8s Team) | As a platform engineer, I want the internal scanner to rely on continuous findings rather than triggering runtime scans directly.                                  | So that CI/CD pipelines are decoupled from runtime scanning operations and cluster performance is unaffected.    |
+| Security Architect              | As a security architect, I want to replace the Aqua integration with Wiz without altering the governance and decision-making model.                                | So that security policy enforcement remains centralised while modernising the scanning backend.                  |
+| Risk & Compliance Officer       | As a compliance officer, I want audit evidence and decision traceability to remain intact after the transition.                                                    | So that regulatory obligations and reporting standards are maintained.                                           |
+| Security Operations (SOC)       | As a SOC analyst, I want visibility into vulnerabilities affecting running workloads based on Wiz findings.                                                        | So that I can prioritise remediation based on contextual risk rather than raw vulnerability volume.              |
+| SRE / Operations                | As an operations engineer, I want CI/CD gating decisions to remain available even if Wiz experiences temporary latency.                                            | So that pipeline reliability is preserved and production releases are not disrupted.                             |
+| Engineering Manager             | As an engineering manager, I want the transition from Aqua to Wiz to be transparent to delivery teams.                                                             | So that productivity is not impacted during the integration change.                                              |
+| Architecture Review Board       | As a reviewer, I want assurance that the API transition does not weaken existing security controls.                                                                | So that enterprise security posture is maintained while improving scalability and reducing operational overhead. |
+
+
 
 
 | **Function**                               | **Description**                                                                                                                                                                              |
@@ -55,3 +69,7 @@ The current integration pattern requires the internal scanner to initiate scans 
 | Dual-Run / Coexistence Mode                | Capability to query both Aqua and Wiz during transition phase to validate findings parity prior to full cutover.                                                                             |
 | Decision Snapshot Caching                  | Caching of latest validated decision per artifact/environment to reduce repeated Wiz API calls and improve response performance.                                                             |
 | Logging & Monitoring Integration           | Integration with enterprise logging and monitoring platforms to track API calls, decision outcomes, latency, and ingestion health.                                                           |
+
+
+
+
