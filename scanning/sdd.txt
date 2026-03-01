@@ -158,3 +158,6 @@ dependencies
 | Integration of Wiz vulnerability findings into internal scanner decision engine (PASS/WARN/FAIL) | Replacement or redesign of existing SAST and DAST tooling integrations                                                             |
 | Implementation of scan freshness validation logic aligned to Wiz continuous scanning model       | Introduction of new runtime enforcement tooling beyond current architectural baseline                                              |
 | Coexistence capability (dual Aqua + Wiz integration during transition)                           | Decommissioning of Aqua runtime components outside the API integration scope                                                       |
+
+
+
