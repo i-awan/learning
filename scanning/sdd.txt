@@ -148,3 +148,13 @@ dependencies
 | Policy Consistency | Severity mapping differences between Aqua and Wiz                                 | Manual policy calibration required to ensure consistent gating outcomes         | Necessary to maintain continuity of security posture during tool transition; will be standardised once Wiz becomes sole provider          |
 | Runtime Controls   | Potential removal or reduction of runtime enforcement previously provided by Aqua | Reduced preventative runtime capability if not replaced by alternative controls | Accepted risk pending implementation of compensating Kubernetes policy controls or complementary runtime tooling                          |
 | Reporting          | Parallel reporting outputs during coexistence phase                               | Duplication of dashboards and operational overhead                              | Required for assurance and audit validation before decommissioning Aqua; scheduled for rationalisation post-transition                    |
+
+
+
+| **IN SCOPE**                                                                                     | **OUT OF SCOPE**                                                                                                                   |
+| ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Replacement of Aqua API calls with Wiz findings retrieval APIs within the internal scanner       | Full enterprise-wide adoption of Wiz across all security domains (e.g., CSPM, IAM risk, secrets scanning beyond container context) |
+| Implementation of provider abstraction layer to support Wiz integration                          | Redesign of CI/CD pipelines or changes to external pipeline invocation patterns                                                    |
+| Integration of Wiz vulnerability findings into internal scanner decision engine (PASS/WARN/FAIL) | Replacement or redesign of existing SAST and DAST tooling integrations                                                             |
+| Implementation of scan freshness validation logic aligned to Wiz continuous scanning model       | Introduction of new runtime enforcement tooling beyond current architectural baseline                                              |
+| Coexistence capability (dual Aqua + Wiz integration during transition)                           | Decommissioning of Aqua runtime components outside the API integration scope                                                       |
