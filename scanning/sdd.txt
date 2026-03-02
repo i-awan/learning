@@ -189,3 +189,13 @@ dependencies
 | `GET /metrics`                                         | Prometheus/OpenTelemetry metrics endpoint; internal only                  | Exposes latency, error rate, ingestion lag, decision volume                              | Monitoring validation; alert threshold testing                                                                  | **Medium** – Observability & compliance            |
 | Wiz Findings Adapter API (Internal Service → Wiz SaaS) | Outbound HTTPS; token-based auth; scheduled or event-triggered; versioned | Retrieves vulnerability findings and scan metadata from Wiz                              | Mocked API integration tests; contract validation; timeout and retry simulation                                 | **High** – Upstream findings source                |
 | `POST /admin/policy`                                   | Secured internal endpoint; role-restricted                                | Create/update policy thresholds, environment rules, and waiver configurations            | Role-based access tests; configuration validation; audit trail verification                                     | **Medium–High** – Governance & policy integrity    |
+
+
+
+
+
+Disclaimer – Scope Clarification
+
+This document does not cover the installation, deployment, or enterprise-wide rollout of Wiz as a security platform. The scope of this SDD is limited to the replacement of the existing integration between the internal scanner and Aqua Enterprise with a new integration between the internal scanner and Wiz.
+
+The focus of this proposal is specifically on API and integration re-wiring, including findings retrieval, policy evaluation, and CI/CD decision workflows. No changes to external consumer interfaces, pipeline structures, or broader security control frameworks are proposed as part of this design. Any operational deployment considerations for Wiz beyond the integration layer are explicitly out of scope and subject to separate governance and review.
