@@ -1,0 +1,265 @@
+================================================================================
+SCANNER HANDLER
+Wiz Queuing — Capacity Concerns & Risk Mitigation
+Architecture Review  |  Version 1.0  |  Confidential
+================================================================================
+
+
+--------------------------------------------------------------------------------
+1. CONTEXT & PROBLEM STATEMENT
+--------------------------------------------------------------------------------
+
+The Scanner Handler acts as an abstraction layer between internal CI/CD pipelines
+and Wiz's image scanning capability. With thousands of scan requests per day
+arriving in burst patterns from CI/CD pipelines, the architecture must be
+validated against Wiz's actual capacity characteristics — both for cloud images
+(Wiz SaaS) and on-prem images (Outpost Lite).
+
+The core concern is that Wiz's internal queuing and throughput limits are largely
+undocumented from the integration side, creating architectural risk.
+
+NOTE: The Scanner Handler currently runs on a VM with planned migration to GKE.
+Recommendations in this document address both deployment contexts.
+
+
+--------------------------------------------------------------------------------
+2. TWO SCAN PATHS — DIFFERENT PROBLEMS
+--------------------------------------------------------------------------------
+
+There are two distinct scanning paths, each with fundamentally different queuing
+characteristics and risk profiles.
+
+  PATH  IMAGE TYPE                SCANNER                  QUEUING MODEL
+  ----  ------------------------  -----------------------  --------------------------------
+  1     Cloud images (ECR)        Wiz SaaS                 Wiz internal — auto-scaling,
+                                                           undocumented limits
+  2     On-prem / cluster images  Outpost Lite             No queue — Kubernetes pod
+                                  (K8s daemonset)          scheduling is the queue
+
+
+--------------------------------------------------------------------------------
+3. UNKNOWN WIZ CHARACTERISTICS — KEY GAPS
+--------------------------------------------------------------------------------
+
+The following characteristics are currently unknown and represent direct
+architectural risk. Each must be formally validated with Wiz or through load
+testing before the system can be considered fit for purpose.
+
+
+3a. Wiz SaaS — Cloud Image Path
+--------------------------------
+
+  UNKNOWN CHARACTERISTIC                   WHY IT MATTERS                        RISK IF UNVALIDATED
+  ---------------------------------------  ------------------------------------  -----------------------------------------
+  Per-tenant API rate limit for            Scanner Handler drainer must be       429 errors, silent job failures,
+  triggerImageScan                         tuned to this exact value             queue backlog growth
+
+  Maximum concurrent scan jobs             Different from rate limit — caps       Submissions accepted but scans stall
+  per tenant                               total in-flight scans simultaneously  — no feedback to caller
+
+  Scan completion SLA by priority          Pipeline latency depends on this —    CI/CD pipelines fail waiting for
+  tier (HIGH / NORMAL / LOW)               blocking pipelines will time out      scan verdict
+                                           if SLA is breached
+
+  Behaviour when rate limit exceeded       Determines retry strategy and         Jobs lost if Wiz silently drops
+  — 429, silent drop, or internal queue    whether nack is sufficient            rather than returning 429
+                                           protection
+
+  Job durability during Wiz SaaS           If Wiz loses in-flight jobs during    Jobs submitted to Wiz but never
+  incident — are queued jobs preserved?    an outage, Pub/Sub queue cannot       completed — no findings returned
+                                           recover them
+
+  Sandbox or load test environment         Cannot validate at volume in          Architecture validated only at low
+  availability                             production safely                     volume — unknown behaviour at peak
+
+
+3b. Outpost Lite — On-Prem / Cluster Path
+------------------------------------------
+
+Outpost Lite runs as a Kubernetes daemonset. Each scan spins up a pod, runs the
+scan, then terminates. There is no queue — Kubernetes scheduling is doing the
+queue work implicitly. This creates a different set of risks.
+
+  UNKNOWN CHARACTERISTIC                   WHY IT MATTERS                        RISK IF UNVALIDATED
+  ---------------------------------------  ------------------------------------  -----------------------------------------
+  CPU / memory resource request per        Determines how many pods can run      Nodes saturate, pods evicted
+  scan pod                                 concurrently per node before          mid-scan, jobs lost
+                                           eviction
+
+  Behaviour of pods stuck in Pending       Pending pods with no timeout are      Scans stall indefinitely with no
+  state — timeout or wait indefinitely     silent failures from the caller       error returned to caller
+                                           perspective
+
+  Node autoscaler configuration and        Burst of 500 pods on a cluster        Scale-out too slow, Pending queue
+  new node provisioning time               sized for 50 concurrent means 450     grows, pipelines time out
+                                           pods wait for new nodes
+
+  Whether scan pods run on dedicated       Shared nodes mean scan pods compete   Application workloads degraded
+  or shared nodes                          with application workloads for        during scan bursts
+                                           resources
+
+
+--------------------------------------------------------------------------------
+4. DEFINING 'GOOD' — FIT-FOR-PURPOSE CRITERIA
+--------------------------------------------------------------------------------
+
+Fit-for-purpose is defined against three concrete criteria. All three must be
+satisfied for the queuing mechanism to be considered production-ready.
+
+  CRITERION      DEFINITION                              WHAT GOOD LOOKS LIKE
+  -------------  --------------------------------------  ----------------------------------------
+  Throughput     End-to-end path handles peak CI/CD      HIGH priority scan completes within
+                 burst volume without dropping jobs       5 min. NORMAL within 15 min. Zero
+                 or breaching latency SLA                 job drops at 2x expected peak load.
+
+  Durability     No scan job is lost due to any single   100% of submitted jobs either complete
+                 component failure — pod crash, queue     or produce an explicit failure state.
+                 outage, or Wiz unavailability            No silent drops. Reconciler recovers
+                                                          stuck jobs within 5 minutes.
+
+  Observability  Engineering team can determine in        Dashboards show: queue depth,
+                 real time whether the system is          submission rate, Wiz 429 rate, p95
+                 healthy, degrading, or failing —         scan latency, Pending pod count
+                 before callers are impacted              (Outpost Lite), reconciler requeue rate.
+
+
+--------------------------------------------------------------------------------
+5. SCANNER HANDLER MITIGATIONS
+--------------------------------------------------------------------------------
+
+Regardless of what Wiz's actual limits are, the following mitigations can be
+implemented on the Scanner Handler side to protect against being flooded beyond
+its capacity to forward requests.
+
+
+5a. Current State — VM Deployment
+-----------------------------------
+
+  RISK: A VM-based Scanner Handler has no autoscaling. A burst of requests that
+  exceeds the VM's capacity will either queue in memory (lost on restart) or drop
+  connections. There is no backpressure mechanism.
+
+  MITIGATION                        DETAIL                                              APPLIES TO
+  --------------------------------  --------------------------------------------------  -----------
+  Concurrency limit on API layer    Enforce max concurrent requests (e.g. 100) at the   VM + GKE
+                                    web server level. Return 429 with Retry-After
+                                    header when exceeded. Callers back off rather
+                                    than overloading the VM.
+
+  Rate-limited drainer to Wiz       Token bucket controlling submissions to Wiz.         VM + GKE
+                                    Tuned to Wiz tenant rate limit. Prevents 429
+                                    cascade from Wiz back to Scanner Handler.
+
+  Pub/Sub as durable ingestion      Accept request, write to Firestore, publish to       VM + GKE
+  buffer                            Pub/Sub, return 202 immediately. Queue absorbs
+                                    burst; drainer processes at safe rate. Jobs
+                                    survive VM restart.
+
+  Concurrency gate for Outpost      Cap the number of simultaneous scan pods             VM + GKE
+  Lite                              submitted to the cluster. Excess jobs wait in
+                                    Pub/Sub, not as Pending pods. Prevents cluster
+                                    saturation.
+
+  Reconciler CronJob                Detects jobs stuck in PENDING beyond threshold       VM + GKE
+                                    and requeues them. Safety net for publish
+                                    failures or pod crashes mid-submission.
+
+  Circuit breaker on Wiz API        If Wiz returns 5xx or 429 consecutively beyond      VM + GKE
+  calls                             threshold, open the circuit. Stop submitting
+                                    for a backoff window. Prevents thundering herd
+                                    on Wiz recovery.
+
+
+5b. Target State — GKE Deployment
+------------------------------------
+
+GKE unlocks additional mitigations not available on a VM:
+
+  GKE CAPABILITY                    HOW IT HELPS
+  --------------------------------  -------------------------------------------------------
+  Horizontal Pod Autoscaler (HPA)   Scale worker pods based on Pub/Sub undelivered message
+                                    count. Burst traffic spins up more workers automatically;
+                                    idle periods scale back to minimum.
+
+  Pod Disruption Budget             Ensures minimum scanner handler pods remain available
+                                    during node maintenance or rolling deployments. Prevents
+                                    accidental total outage.
+
+  Liveness + Readiness Probes       Unhealthy pods removed from load balancer immediately.
+                                    Kubernetes restarts stuck or deadlocked pods automatically.
+
+  Dedicated node pool for scan      Isolates Scanner Handler resource consumption from other
+  workers                           workloads. Burst scanning does not degrade unrelated
+                                    services.
+
+  Resource requests and limits      Prevents any single pod consuming disproportionate
+                                    memory/CPU. OOM kills are bounded and predictable.
+
+
+--------------------------------------------------------------------------------
+6. VALIDATION PLAN
+--------------------------------------------------------------------------------
+
+Three phases of validation are required before the queuing mechanism can be
+signed off as fit for purpose.
+
+  PHASE               TIMELINE  ACTIVITIES                              SUCCESS CRITERIA
+  ------------------  --------  --------------------------------------  --------------------------------
+  1 — Baseline        Week 1-2  Submit 10, 50, 100 scans. Measure      Rate limits confirmed. p95
+                                latency per priority. Confirm rate      latency benchmarked. Webhook
+                                limits empirically. Validate webhook    delivery 100%.
+                                delivery at low volume.
+
+  2 — Load Test       Week 2-3  Replay a peak CI/CD day against Wiz.   Zero dropped jobs at 2x
+                                Measure submission acceptance rate,     expected peak. No 429s at
+                                429 frequency, completion latency.      configured drainer rate.
+                                Identify Outpost Lite cluster
+                                saturation point.
+
+  3 — Failure         Week 3-4  Kill Scanner Handler pods mid-burst.   Zero job loss across all
+      Injection                 Simulate Wiz 429 sustained for 10      failure scenarios. Full
+                                min. Simulate Wiz outage for 30 min.   recovery on Wiz restore.
+                                Saturate Outpost Lite cluster.
+
+
+--------------------------------------------------------------------------------
+7. RECOMMENDED ACTIONS
+--------------------------------------------------------------------------------
+
+  #   ACTION                                                  OWNER                        PRIORITY
+  --  ------------------------------------------------------  ---------------------------  ---------
+  1   Formally request Wiz rate limits, SLAs, and sandbox    Scanner Handler Team         IMMEDIATE
+      environment from account team
+
+  2   Implement Pub/Sub + Firestore durable queue on         Scanner Handler Team         IMMEDIATE
+      Scanner Handler (VM)
+
+  3   Implement token bucket rate limiter tuned to           Scanner Handler Team         IMMEDIATE
+      Wiz tenant limit
+
+  4   Implement concurrency gate for Outpost Lite            Scanner Handler Team         HIGH
+      pod submissions
+
+  5   Implement circuit breaker on all Wiz API calls         Scanner Handler Team         HIGH
+
+  6   Execute Phase 1 baseline validation against            Scanner Handler Team + Wiz   HIGH
+      Wiz SaaS
+
+  7   Define and agree scan completion SLA per priority      Architecture + Wiz Account   HIGH
+      tier with Wiz                                          Team
+
+  8   Execute Phase 2 load test at 2x expected peak          Scanner Handler Team         MEDIUM
+      volume
+
+  9   Complete GKE migration with HPA configured on          Platform Team                MEDIUM
+      Pub/Sub queue depth metric
+
+  10  Execute Phase 3 failure injection and sign off         Architecture                 MEDIUM
+      fit-for-purpose
+
+
+================================================================================
+"The biggest architectural risk is not the Scanner Handler — it is building a
+ well-engineered ingestion layer that feeds into two black boxes whose capacity
+ has not yet been formally validated."
+================================================================================
