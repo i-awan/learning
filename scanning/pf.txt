@@ -1,0 +1,143 @@
+ Promptfoo — Architectural Analysis
+Platform Adoption Considerations for a Regulated Banking Environment
+
+Status
+Draft	Version
+0.1	Owner
+Architecture	Date
+March 2026
+
+Overview
+Promptfoo is an open-source LLM testing and red-teaming framework. Unlike traditional vulnerability scanners which carry a built-in CVE database, Promptfoo operates as a testing framework — it provides the execution engine, reporting layer, and assertion infrastructure, but relies on the operator to define what constitutes a policy violation for their specific application.
+
+Key distinction
+Promptfoo does not auto-detect vulnerabilities. It generates adversarial inputs, sends them to your model, and judges responses against assertions you define. Think of it as Cucumber/BDD for AI behaviour — you write the scenarios, the framework runs and scores them.
+
+(A) Wrapping and Scaling as a Service
+Promptfoo is a CLI tool by default. To make it enterprise-grade it needs a service wrapper that handles job orchestration, result storage, and downstream integration.
+Recommended execution model
+Scans can run for minutes to hours depending on test volume. A synchronous HTTP API is not appropriate — a job-based async pattern is required.
+
+Client / CI Pipeline
+       |
+  REST API  (POST /scans  →  returns jobId)
+       |
+  Job Queue  (SQS / RabbitMQ)
+       |
+  Worker Pool  (runs promptfoo as child process)
+       |
+  Results Store  (S3 + Postgres)
+       |
+  Webhook / poll  GET /scans/{jobId}/results
+
+Getting results out
+Promptfoo natively outputs JSON — the clean integration point for downstream systems.
+
+promptfoo redteam run --output results.json --output-format json
+
+From the JSON output, results can be routed to a SIEM (Splunk), a vulnerability management platform (ServiceNow), a CI pipeline gate, or an MRM dashboard. A lightweight adapter service handles the fan-out.
+Scaling considerations
+
+Concern	Approach
+Horizontal scale	Stateless workers as Kubernetes jobs or ECS tasks — each scan is independent
+API rate limiting	Worker pool must respect LLM provider rate limits — use a token bucket per provider
+Cost control	Large scans against GPT-4 / Claude can be expensive — set numTests budgets and alert on overrun
+Parallelism	Promptfoo supports concurrent requests — tune --max-concurrency per worker
+Multi-tenancy	Namespace scan configs and results by team — enforce via API layer, not promptfoo itself
+
+(B) Getting Model Files In
+Important clarification
+Promptfoo never loads model weight files directly. It communicates with models exclusively via API endpoints. The model file problem is an infrastructure concern that sits upstream of promptfoo — your job is to expose the model as an endpoint that promptfoo can call.
+
+Scenario 1 — Fine-tuned or self-hosted model weights (largest files)
+Model weight files for open-source models (LLaMA, Mistral etc) range from several GB to 70GB+. The recommended pattern is a dedicated model serving layer that exposes an OpenAI-compatible REST API.
+
+Large model weights  (S3 / NFS / model registry)
+       |
+  Model serving layer  (vLLM / Ollama / Triton)
+       |
+  OpenAI-compatible REST API  (:8000/v1)
+       |
+  Promptfoo  (targets: openai:your-model  apiBaseUrl: http://internal:8000/v1)
+
+The model file never touches promptfoo. vLLM is the recommended serving layer — it exposes an OpenAI-compatible API out of the box and handles efficient loading of large weights.
+Scenario 2 — Large system prompts / RAG documents
+Where the model is hosted externally (via an internal gateway) but the application under test uses large policy documents or knowledge bases as context, these are injected at scan time via a custom provider.
+
+// provider.js — pulls policy doc from S3 at scan time
+async callApi(prompt) {
+  const systemPrompt = await s3.getObject({ Bucket: 'ai-policies', Key: 'v2/prompt.txt' });
+  return anthropic.messages.create({ system: systemPrompt, messages: [{ role: 'user', content: prompt }] });
+}
+Scenario 3 — Hosted model via internal gateway (most common in banking)
+In most bank environments, model access is brokered through an internal LLM gateway that handles approval, logging, and DLP. Promptfoo simply points at the gateway — no model files involved.
+
+targets:
+  - id: openai:gpt-4
+    config:
+      apiBaseUrl: https://internal-llm-gateway.bank.com/v1
+      apiKey: ${INTERNAL_GATEWAY_KEY}
+
+Scenario	File size concern	Solution
+Fine-tuned / OSS weights	High — 10–70GB+	vLLM or Ollama serving layer; promptfoo hits API only
+Large prompts / RAG docs	Medium — MBs	Custom provider.js pulls from S3 at scan time
+Hosted model via gateway	None	Point promptfoo at internal gateway endpoint
+
+(C) Regulated Banking Environment
+A banking deployment introduces constraints across data residency, auditability, toolchain approval, and model risk management. Each must be addressed before production adoption.
+Data residency and the judge LLM problem
+Promptfoo uses an LLM to judge whether responses pass or fail assertions (the llm-rubric assertion type). By default this calls an external provider. In a regulated environment this is not acceptable — prompt data and model responses cannot leave the approved cloud boundary.
+
+Action required
+Override the default judge to an internally approved model. Every scan verdict must be produced by a model within your approved infrastructure — not an external API call.
+
+# Override default judge to internal model
+evaluator:
+  provider: https://internal-llm-gateway.bank.com/v1
+Air-gapped deployment
+Production AI environments in banks frequently have no internet access. Promptfoo and all npm dependencies must be bundled as an internal artifact — no runtime npm install, no calls to external CDNs or registries. Maintain an internal mirror (Artifactory / Nexus) and pin versions explicitly.
+Audit trail requirements
+Regulators (PRA / FCA) expect AI models to have documented validation evidence. Every promptfoo scan must produce an immutable, timestamped audit record containing all of the following:
+
+Audit field	Purpose
+Model version / system prompt hash	Proves exactly what was tested
+All test case inputs	Reproducibility — can re-run identically
+Raw model outputs	Evidence of actual behaviour at test time
+Assertion results + judge verdicts	Pass/fail record with reasoning
+Timestamp + operator identity	Chain of custody
+Cryptographic signature (internal PKI)	Tamper evidence for immutability
+Model Risk Management (MRM) integration
+Promptfoo scan results should feed directly into your MRM documentation as evidence of adversarial testing. For this to be credible to a model validator, the process itself must be controlled and repeatable — versioned test suites, no ad-hoc assertion changes between runs, results stored immutably alongside model versions.
+
+Recommended pattern
+Make a passing promptfoo scan a mandatory gate in your model deployment pipeline — not an optional bolt-on. Tie the scan configuration version to the model version in your model registry so validators can trace exactly what was tested against what.
+
+High-level target architecture
+
+                  Bank Private Cloud
+                  ─────────────────────────────────
+ CI/CD Pipeline ──► Scan API (REST)
+ MRM Portal     ──►   |
+ Manual trigger ──► Job Queue  (internal MQ)
+                      |
+                  Promptfoo Workers  (Kubernetes)
+                      |               |
+                  Model under     Judge LLM
+                  test (vLLM)     (internal, approved)
+                      |
+                  Results Store  (S3 + Postgres)
+                      |
+                  Audit Log  (immutable, signed)
+                      |
+                  SIEM / MRM Dashboard
+
+Key Architectural Decisions
+
+Decision	Options	Recommendation
+Model access pattern	Hosted API vs self-hosted weights	Internal LLM gateway preferred — keeps all traffic inside boundary
+Judge LLM	External (default) vs internal	Must be internal in banking — non-negotiable for data residency
+Deployment model	Shared platform vs per-team tooling	Shared platform for consistency; per-team creates ungoverned sprawl
+MRM integration	Optional scan vs mandatory gate	Mandatory gate in deployment pipeline for regulatory credibility
+Dependency management	Live npm vs internal mirror	Internal Artifactory/Nexus mirror with pinned versions
+
+This document is a first-pass architectural analysis and should be reviewed alongside your firm's AI governance framework, cloud security standards, and MRM policy before adoption decisions are made.
