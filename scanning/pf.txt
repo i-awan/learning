@@ -1,4 +1,5 @@
- Promptfoo — Architectural Analysis
+Promptfoo — Architectural Analysis
+
 Platform Adoption Considerations for a Regulated Banking Environment
 
 Status
@@ -141,3 +142,7 @@ MRM integration	Optional scan vs mandatory gate	Mandatory gate in deployment pip
 Dependency management	Live npm vs internal mirror	Internal Artifactory/Nexus mirror with pinned versions
 
 This document is a first-pass architectural analysis and should be reviewed alongside your firm's AI governance framework, cloud security standards, and MRM policy before adoption decisions are made.
+
+
+
+

@@ -1,0 +1,147 @@
+WIZ SCANNING PLATFORM
+Performance Requirements & Acceptance Criteria
+Version 1.0  |  Confidential  |  For Wiz Account Team
+
+
+1. Purpose & Scope
+This document defines the minimum performance requirements and acceptance criteria that Wiz must satisfy to support our image scanning workload. These requirements apply to both the Wiz SaaS scanning endpoint and the Wiz Outpost Lite deployment running on our internal on-premises Kubernetes cluster. The criteria set out herein form the basis of our production readiness assessment and must be validated through formal performance testing prior to go-live.
+The scanner handler service acts as the intermediary layer between our CI/CD pipelines and the Wiz scanning platform. All scan requests are routed through the scanner handler, which manages queuing, rate limiting, deduplication, and result retrieval. The performance requirements defined in this document must be met end-to-end — from submission of a scan request to the scanner handler through to completion and retrieval of findings from Wiz.
+
+2. Minimum Throughput Requirements
+The following throughput figures represent the minimum acceptable performance levels under normal operating conditions. These are derived from our current and projected CI/CD pipeline volumes and include an additional 2,500 scans per day submitted via the scanner handler on top of the baseline volume. Wiz must demonstrate the ability to sustain these figures consistently over a rolling measurement window without degradation.
+
+Measurement Window
+Baseline Volume
+Including Scanner Handler (+2,500/day)
+Per Minute
+18 scans
+20 scans
+Per Day
+13,000 scans
+15,500 scans
+Per Week
+50,000 scans
+67,500 scans
+
+NOTE
+The figures in the final column represent the total volume Wiz must handle inclusive of scanner handler traffic. These are the figures against which acceptance testing will be conducted.
+
+3. Scan Completion Latency
+Scan completion latency is defined as the elapsed time between submission of a triggerImageScan mutation to the Wiz GraphQL endpoint and the scan status transitioning to COMPLETED with findings available. This latency directly impacts CI/CD pipeline duration and must remain within the bounds defined below under both normal and peak load conditions.
+
+Priority Tier
+p50 Target
+p95 Target
+p99 Target
+Maximum
+HIGH
+3 min
+5 min
+8 min
+10 min
+NORMAL
+8 min
+15 min
+20 min
+30 min
+LOW
+15 min
+30 min
+45 min
+60 min
+
+Latency SLAs must be maintained under all load conditions including peak burst. HIGH priority scans must not be blocked or degraded by a concurrent backlog of NORMAL or LOW priority scans. Wiz must demonstrate effective priority lane isolation during acceptance testing.
+
+4. API Rate Limit Transparency
+The scanner handler relies on accurate knowledge of the per-tenant GraphQL API rate limit in order to correctly configure its token bucket and avoid triggering rate limit errors under normal operating conditions. Wiz must formally confirm the following prior to production deployment.
+
+Information Required
+Acceptance Criterion
+Confirmed per-tenant rate limit for triggerImageScan mutations
+Formally documented and provided to integration team prior to go-live
+Behaviour when rate limit is exceeded
+Must return a machine-readable error code in the GraphQL errors[] body — not a silent drop
+Rate limit reset window
+Documented — per second, per minute, or per hour window confirmed in writing
+Behaviour during Wiz SaaS incident
+Queued jobs must be preserved and processed on recovery — no silent loss
+Sandbox or staging environment
+Available for load testing prior to production cutover
+
+5. Outpost Lite — Resource & Sizing Requirements
+Wiz Outpost Lite will be deployed on our internal on-premises Kubernetes cluster. Unlike the Wiz SaaS path, the scanning workload is executed within our own infrastructure. Wiz must provide documented resource requirements derived from internal lab testing so that we can correctly size the namespace resource quotas, node pool, and concurrency limits prior to deployment.
+
+Information Required
+Acceptance Criterion
+CPU request and limit per scan pod
+Observed values from Wiz lab testing provided — not estimated minimums
+Memory request and limit per scan pod
+Observed values by image size category (small / medium / large) provided
+Average scan duration by image size
+Benchmark results at small (<100MB), medium (100-300MB), large (>300MB) provided
+Maximum recommended concurrent pods
+Safe concurrency ceiling confirmed — value at which performance degrades documented
+Minimum node specification
+Node CPU, memory, and storage spec validated in Wiz lab environment provided
+Safe request rate to Wiz endpoint per minute
+Rate at which Wiz endpoint dispatches to Outpost Lite without overwhelming cluster documented
+
+IMPORTANT
+Resource requirements must be based on observed lab benchmark data, not theoretical estimates. If Wiz is unable to provide these figures, we reserve the right to conduct our own benchmarking in a pre-production environment before committing to a production sizing.
+
+6. Reliability & Durability Requirements
+The following reliability requirements apply to the Wiz SaaS scanning platform and must be maintained throughout the contract term. Any breach of these requirements during acceptance testing or production operation must be accompanied by a formal root cause analysis and remediation plan within the agreed SLA window.
+
+Requirement
+Minimum Standard
+Measurement Period
+Platform availability
+99.9% uptime
+Rolling 30 days
+Scan job durability during outage
+Zero job loss on recovery
+Per incident
+Webhook delivery success rate
+99.5%
+Rolling 7 days
+Priority lane effectiveness
+HIGH completes before LOW
+Per test run
+Duplicate scan prevention by digest
+One licence unit per digest
+Per test run
+
+7. Acceptance Testing Approach
+Formal acceptance testing will be conducted across three phases before production cutover is approved. Wiz must provide access to a sandbox or staging environment that is representative of the production configuration for phases one and two. Phase three will be conducted in the production environment under controlled conditions.
+
+Phase
+Focus
+Activities
+Pass Criteria
+1
+Baseline
+Submit 10, 50, 100 scans. Confirm rate limits empirically. Validate webhook delivery. Measure latency per priority tier.
+Rate limits confirmed. p95 latency within SLA. Webhooks 100% delivered.
+2
+Load Test
+Replay peak CI/CD day profile. Submit at 2x expected peak volume. Measure 429 frequency, completion latency, priority isolation.
+Zero dropped jobs at 2x peak. No 429s at configured drainer rate. Priority lanes effective.
+3
+Failure
+Injection
+Simulate Wiz outage for 30 min. Simulate sustained 429 for 10 min. Kill scanner handler pods mid-burst. Saturate Outpost Lite cluster.
+Zero job loss across all scenarios. Full recovery on Wiz restore. Outpost Lite cluster stable.
+
+8. Non-Negotiable Requirements
+The following requirements are absolute prerequisites for production sign-off. They are not subject to negotiation or deferral. Failure to satisfy any one of these items will prevent production cutover regardless of performance test outcomes in other areas.
+
+	•	Wiz must formally confirm the per-tenant GraphQL API rate limit in writing before integration testing begins.
+	•	Wiz must provide Outpost Lite resource benchmark data from internal lab testing before namespace sizing is finalised.
+	•	Wiz must confirm that scan job durability is maintained across SaaS incidents — no submitted jobs are silently lost during an outage.
+	•	Wiz must confirm the licence model for duplicate digest submissions — one digest must count as one licence unit regardless of how many scan requests reference it.
+	•	Wiz must provide a sandbox environment representative of production for phases one and two of acceptance testing.
+	•	Wiz must confirm whether Private Service Connect or equivalent private connectivity is supported for on-premises to Wiz SaaS traffic, given the scanner handler runs on-premises and current egress routes through a shared corporate proxy.
+
+
+
+These requirements form the minimum bar for production readiness. Wiz is requested to confirm acceptance of each requirement in writing, or raise any constraints or dependencies at the earliest opportunity.
