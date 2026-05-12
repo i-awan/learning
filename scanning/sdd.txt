@@ -199,3 +199,18 @@ Disclaimer – Scope Clarification
 This document does not cover the installation, deployment, or enterprise-wide rollout of Wiz as a security platform. The scope of this SDD is limited to the replacement of the existing integration between the internal scanner and Aqua Enterprise with a new integration between the internal scanner and Wiz.
 
 The focus of this proposal is specifically on API and integration re-wiring, including findings retrieval, policy evaluation, and CI/CD decision workflows. No changes to external consumer interfaces, pipeline structures, or broader security control frameworks are proposed as part of this design. Any operational deployment considerations for Wiz beyond the integration layer are explicitly out of scope and subject to separate governance and review.
+
+
+
+
+Cloud registries — AWS ECR, GCP Artifact Registry, and Azure ACR each connect to Wiz via a cloud connector. This is the key shift from the current GCP-only approach. Wiz supports all three natively so the scanning model is identical regardless of which cloud the image lives in.
+
+Scanning layer — Wiz SaaS handles cloud images across all three providers. Outpost Lite handles on-prem images. The scanner handler sits alongside as the on-demand trigger when a specific scan is needed outside Wiz's scheduled discovery cycle.
+
+Findings store — BigQuery is the natural choice here because it is cloud agnostic, scales without infrastructure management, and you already have a pattern of using it for GCP native scan results. The difference is that now all findings from all clouds land in one place rather than only GCP findings. Wiz publishes findings via webhook or scheduled export to BigQuery.
+
+Query and access layer — this is where the design decision for third party access lives. Two options sit side by side. A findings API gives you a controlled REST interface with filtering by image, severity, CVE ID, and date range. BigQuery views give authorised parties direct SQL access — good for data teams and tooling that can natively query BigQuery. Both read from the same underlying store.
+
+Consumers — the scanner handler UI, third party tools like SIEM or ITSM platforms, and data teams using Looker or Data Studio all consume from the query layer. Each consumer uses whichever access method suits them — API or direct SQL.
+
+The critical improvement over the current state is that the findings store and query layer are completely decoupled from which cloud did the scanning. Adding a new cloud provider in future means adding a Wiz connector — nothing changes in BigQuery, the API, or the consumers.
