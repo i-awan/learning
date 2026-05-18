@@ -214,3 +214,50 @@ Query and access layer — this is where the design decision for third party acc
 Consumers — the scanner handler UI, third party tools like SIEM or ITSM platforms, and data teams using Looker or Data Studio all consume from the query layer. Each consumer uses whichever access method suits them — API or direct SQL.
 
 The critical improvement over the current state is that the findings store and query layer are completely decoupled from which cloud did the scanning. Adding a new cloud provider in future means adding a Wiz connector — nothing changes in BigQuery, the API, or the consumers.
+
+
+
+190 
+
+
+date 
+
+
+0333 777 8999
+
+
+
+Solution Overview
+The solution replaces the existing GCP-native scanning approach — which publishes findings to BigQuery via OSV scanner but is inherently tied to a single cloud — with Wiz as a cloud-agnostic scanning platform covering AWS, GCP, and Azure. Wiz connects to each cloud registry via a native connector, 
+scans container images either through Wiz SaaS for cloud-hosted images or Outpost Lite for images that cannot leave the perimeter, and publishes the resulting CVE findings to a centralised BigQuery dataset. BigQuery acts as the vendor-neutral findings store — decoupled from which cloud performed the scan — and exposes findings to consumers through two access patterns: a controlled Findings API for tools and services that need a REST interface, and authorised BigQuery views for data teams and third parties that query directly via SQL. The scanner handler sits alongside this as the on-demand trigger layer, allowing CI/CD pipelines to initiate targeted scans outside Wiz's scheduled discovery cycle and retrieve findings through a stable interface that is completely insulated from the underlying vendor. The result is a single, queryable source of truth for CVE findings across the entire multi-cloud estate, accessible to any authorised consumer regardless of which cloud the image originated from, replacing the current fragmented model where scanning coverage and findings storage are coupled to GCP infrastructure.
+
+
+
+USER TYPE            | OBJECTIVE                                                               |   Motivation                                                                            |
+
+Security engineer.   | As a security engineer I want Wiz to scan container images across AWS,    So that I have a single source of truth for CVE findings across the entire multi-cloud 
+                       GCP and Azure and publish findings to a central BigQuery dataset          estate without maintaining separate scanning tools per cloud
+
+
+
+CI/CD pipeline.       As a CI/CD pipeline I want to submit an on-demand scan request via the     So that container images with critical vulnerabilities are identified and blocked 
+                      scanner handler and receive a scan result before deployment proceeds.      before they reach production regardless of which cloud registry they are stored in 
+
+
+Platform engineer.   As a platform engineer I want the scanner handler to abstract the          So that the scanning vendor can be changed or extended without requiring any changes
+                      underlying scanning vendor behind a stable API interface                  to downstream services or CI/CD pipelines that depend on scan results
+
+           
+Third party tool     As a third party security tool I want to query CVE findings via a REST   | So that I can consume vulnerability data without requiring direct access to 
+                     API authenticated with an API key scoped to read-only access               the underlying BigQuery infrastructure or raw Wiz findings
+              
+
+Data analyst         As a data analyst I want to query CVE findings directly                  | So that I can produce vulnerability trend reports and compliance dashboards across the 
+                     from an authorised BigQuery view using SQL                                 full multi-cloud estate without needing access to raw scan data or vendor-specific tooling
+                     
+
+
+
+
+
+XDD-WV6J-2223
