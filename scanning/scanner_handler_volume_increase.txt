@@ -1,0 +1,334 @@
+================================================================================
+SCANNER HANDLER
+Volume Increase Considerations & Risk Mitigations
+Expanding from Nexus to ECR, GAR, Azure ACR + Wiz
+================================================================================
+Version 1.0  |  Confidential
+--------------------------------------------------------------------------------
+
+
+--------------------------------------------------------------------------------
+1. CONTEXT
+--------------------------------------------------------------------------------
+
+The scanner handler is expanding from scanning internal Nexus images only to
+scanning images across four registries using Wiz as the scanning vendor:
+
+  - Internal Nexus          (existing)
+  - AWS ECR                 (new)
+  - GCP Artifact Registry   (new)
+  - Azure ACR               (new)
+
+The scanner handler is a collection of services:
+
+  cont-scan service   Creates an internal scanId, makes the request to Wiz
+                      to scan the image, and puts the internal scanId along
+                      with Wiz's scanId into Pub/Sub.
+
+  Poller service      Retrieves scanId from the queue, polls Wiz for status
+                      and findings, and writes results to Firestore.
+
+The concern is that the increase in volume across four registries may cause
+these services to become overwhelmed and crash. This document covers the
+key considerations and actions required to minimise that risk.
+
+
+--------------------------------------------------------------------------------
+2. VOLUME IMPACT
+--------------------------------------------------------------------------------
+
+  Before (Nexus only):
+    One source, one registry
+    Known, bounded volume
+    Single burst pattern
+
+  After (all four registries):
+    Potentially 3-4x the scan volume
+    Three additional cloud registries
+    Different burst patterns per cloud
+    CI/CD pipelines from multiple environments
+    firing at different and overlapping times
+
+  The scanner handler is now the single funnel for all cloud image scanning
+  across four registries. This is a fundamentally different load profile to
+  what it was designed for.
+
+  Estimated volume uplift:
+    Daily scans (Nexus only):     ~13,000
+    Daily scans (all registries): ~50,000
+    Peak rate increase:           ~3-4x
+
+
+--------------------------------------------------------------------------------
+3. CONT-SCAN SERVICE — CONSIDERATIONS AND ACTIONS
+--------------------------------------------------------------------------------
+
+3a. Inbound Request Volume
+--------------------------
+
+  CONSIDERATION:
+  Four registries sending requests simultaneously creates burst patterns that
+  did not exist with a single registry. Morning CI/CD pipelines across AWS,
+  GCP, and Azure all fire at different times but will overlap. Without
+  per-source controls one registry can flood the handler and starve the others.
+
+  ACTION:
+  Implement a separate rate limit token bucket per registry source. Each source
+  gets its own allowance. A flood from ECR does not consume GAR or Nexus quota.
+
+    Per-source rate limits (tune based on observed traffic):
+      nexus:   10 requests/second
+      ecr:     15 requests/second
+      gar:     15 requests/second
+      acr:     15 requests/second
+
+  If a source exceeds its limit return 429 Too Many Requests with a
+  Retry-After header. The caller backs off. The handler is protected.
+
+
+3b. Wiz API Rate Limit
+----------------------
+
+  CONSIDERATION:
+  Four registries hitting the same Wiz tenant API rate limit simultaneously.
+  The token bucket controlling submissions to Wiz was sized for Nexus-only
+  volume. At 4x the volume it will be hit continuously under normal load,
+  causing cascading 429 errors and queue backlog growth.
+
+  ACTION:
+  Recalculate the token bucket rate for the new combined volume:
+
+    New daily volume:      ~50,000 scans
+    Average rate:          50,000 / 86,400 = ~0.58 scans/second
+    Peak rate (5x avg):    ~2.9 scans/second
+
+  Formally confirm with Wiz that the tenant rate limit covers this peak
+  before cutover. If it does not, request a limit increase as part of the
+  contract discussion. This is a blocking dependency — do not proceed to
+  production cutover without written confirmation.
+
+
+3c. Deduplication Across Registries
+-------------------------------------
+
+  CONSIDERATION:
+  The same base image digest may exist in multiple registries simultaneously.
+  For example the same python:3.11-slim base image could be present in both
+  ECR and GAR. Without deduplication the same image is scanned multiple times,
+  consuming Wiz rate limit budget and potentially triggering duplicate licence
+  charges.
+
+  ACTION:
+  Maintain digest-based deduplication across all four registries. The scanId
+  is keyed on image digest not on registry source. If sha256:abc123 has already
+  been scanned recently, return the existing scanId regardless of which registry
+  the request came from. No new Wiz submission is made.
+
+    sha256:abc123 from ECR  ─┐
+    sha256:abc123 from GAR  ─┤─ same digest = same scan = same scanId
+    sha256:abc123 from ACR  ─┘   no duplicate Wiz submission
+
+
+3d. Circuit Breaker Tuning
+---------------------------
+
+  CONSIDERATION:
+  With four registries submitting simultaneously, a Wiz degradation event
+  produces 4x the failure rate it previously would. The circuit breaker must
+  open faster to prevent a cascade from amplifying across all four sources.
+
+  ACTION:
+  Reduce the failure threshold on the circuit breaker from its current setting.
+  The circuit should open sooner under the higher combined failure rate and give
+  Wiz more recovery time before test requests resume.
+
+    Recommended adjustment:
+      Failure threshold:  reduce from 5 to 3 consecutive failures
+      Recovery timeout:   increase from 60s to 90s
+      Half-open test:     single request only before re-closing
+
+
+--------------------------------------------------------------------------------
+4. PUB/SUB QUEUE — CONSIDERATIONS AND ACTIONS
+--------------------------------------------------------------------------------
+
+  CONSIDERATION:
+  A single Pub/Sub queue receiving messages from four registries means one
+  registry with a large backlog blocks fair processing for all others. The
+  poller service cannot distinguish which messages are time-sensitive and which
+  are from a bulk background scan.
+
+  ACTION:
+  Introduce separate Pub/Sub queues per registry source:
+
+    nexus-scan-jobs-sub
+    ecr-scan-jobs-sub
+    gar-scan-jobs-sub
+    acr-scan-jobs-sub
+
+  Benefits:
+    One registry's backlog does not block another
+    Independent alerting per queue — easier to identify which source
+    is causing build-up
+    Independent scaling — poller can allocate more replicas to a
+    busier queue without starving quieter ones
+    Independent dead letter queues per source for failure isolation
+
+
+--------------------------------------------------------------------------------
+5. POLLER SERVICE — CONSIDERATIONS AND ACTIONS
+--------------------------------------------------------------------------------
+
+5a. Scaling to Handle More Active Scans
+-----------------------------------------
+
+  CONSIDERATION:
+  More scans submitted across four registries means more scans in QUEUED or
+  RUNNING state simultaneously. The poller must keep up with a larger active
+  scan set. If it falls behind, callers wait longer for findings and queue
+  depth grows continuously.
+
+  ACTION:
+  Scale poller replicas based on Pub/Sub undelivered message count using HPA.
+  Each replica handles its own partition of the queue via Pub/Sub message
+  visibility timeout — when one replica holds a message, others cannot see it,
+  preventing two replicas polling the same scanId simultaneously and wasting
+  Wiz rate limit budget.
+
+    Poller HPA configuration:
+      Scale on:  Pub/Sub undelivered message count
+      Trigger:   50 undelivered messages per pod
+      Min:       2 replicas
+      Max:       20 replicas
+
+
+5b. Wiz Polling Rate Budget
+-----------------------------
+
+  CONSIDERATION:
+  The poller calls Wiz GraphQL for every active scan on every poll cycle.
+  At 4x the volume, 4x the polling calls are being made against the same Wiz
+  tenant rate limit that cont-scan is also consuming. Without explicit
+  allocation, cont-scan and the poller will compete for the same budget and
+  one will starve the other.
+
+  ACTION:
+  Split the Wiz rate limit budget between cont-scan and the poller using
+  separate token buckets drawing from the same total allowance:
+
+    Total Wiz rate limit:   N requests/minute (confirm with Wiz)
+    cont-scan allocation:   60% of N  — scan submission priority
+    poller allocation:      40% of N  — status polling
+
+  This ensures scan submissions are never blocked by polling traffic and
+  polling traffic is never blocked by a burst of new submissions.
+
+
+--------------------------------------------------------------------------------
+6. HPA CONFIGURATION — BOTH SERVICES
+--------------------------------------------------------------------------------
+
+  cont-scan and poller scale on different signals because they are bound by
+  different constraints:
+
+    cont-scan:
+      Constraint: CPU bound — creating scanIds and calling Wiz
+      Scale on:   CPU utilisation
+      Trigger:    70% CPU utilisation
+      Min:        2 replicas
+      Max:        20 replicas   (increased from previous ceiling for 4x volume)
+
+    Poller:
+      Constraint: Queue bound — draining Pub/Sub and querying Wiz
+      Scale on:   Pub/Sub undelivered message count
+      Trigger:    50 undelivered messages per pod
+      Min:        2 replicas
+      Max:        20 replicas
+
+
+--------------------------------------------------------------------------------
+7. NAMESPACE RESOURCE QUOTA UPLIFT
+--------------------------------------------------------------------------------
+
+  CONSIDERATION:
+  The existing namespace resource quota was sized for Nexus-only volume with
+  approximately 50 concurrent scanner pods. At 4x the volume the concurrent
+  pod count will be significantly higher. If the quota is not uplifted,
+  scanner pods will be stuck in Pending and scans will silently stall.
+
+  ACTION:
+  Recalculate and uplift the namespace ResourceQuota:
+
+    Old concurrent scans:   50
+    New concurrent scans:   ~200 across four registries
+
+    Updated quota:
+      requests.cpu:          120 cores  (200 pods × 500m + 20% headroom)
+      limits.cpu:            240 cores
+      requests.memory:       120Gi      (200 pods × 512Mi + 20% headroom)
+      limits.memory:         240Gi
+      count/jobs.batch:      240        (200 + 20% headroom)
+
+  Also update:
+    Concurrency gate ceiling in integration service env var
+    maxReplicaCount in HPA for both cont-scan and poller
+
+
+--------------------------------------------------------------------------------
+8. LOAD TESTING BEFORE CUTOVER
+--------------------------------------------------------------------------------
+
+  The existing load test was designed for Nexus-only volume. Before cutting
+  over the additional three registries the following must be validated:
+
+  Phase 1 — Baseline per registry:
+    Submit 50 scans from each of the four registries simultaneously
+    Confirm no cross-source starvation
+    Confirm per-source rate limiters fire correctly
+    Confirm deduplication works across registry sources
+
+  Phase 2 — Combined peak load:
+    Simulate 2x expected peak across all four registries concurrently
+    Measure: cont-scan CPU utilisation, Wiz 429 rate, queue depth per source
+    Measure: poller drain rate, p95 scan completion latency
+    Confirm: zero job loss, no pod crashes, HPA scales correctly
+
+  Phase 3 — Failure injection:
+    Simulate Wiz 429 sustained for 10 minutes at full combined volume
+    Confirm circuit breaker opens and queues absorb safely
+    Confirm recovery drains backlog correctly on Wiz restore
+    Kill cont-scan pods mid-burst — confirm no job loss via Pub/Sub + Firestore
+
+
+--------------------------------------------------------------------------------
+9. SUMMARY OF ACTIONS
+--------------------------------------------------------------------------------
+
+  AREA                        ACTION                                  PRIORITY
+  --------------------------  --------------------------------------  ----------
+  cont-scan inbound           Per-source rate limiter per registry    IMMEDIATE
+  cont-scan → Wiz             Recalculate token bucket for 4x volume  IMMEDIATE
+  Wiz rate limit              Confirm new tenant limit covers peak     IMMEDIATE
+  Deduplication               Digest-based dedup across all 4 sources  IMMEDIATE
+  Pub/Sub                     Separate queues per registry source      HIGH
+  Poller scaling              HPA on queue depth, prevent double poll  HIGH
+  Rate limit budget           Split Wiz limit between cont-scan + poll HIGH
+  Namespace quota             Uplift CPU, memory, Job count for 4x    HIGH
+  Circuit breaker             Tune to open faster at 4x failure rate   HIGH
+  Load testing                Validate at 2x new peak before cutover   MEDIUM
+
+
+================================================================================
+KEY DEPENDENCY — CONFIRM WITH WIZ BEFORE CUTOVER
+================================================================================
+
+The Wiz tenant rate limit must be formally confirmed in writing before any
+of the three new registries are cut over to the scanner handler. The combined
+peak submission rate plus polling rate across four registries at 4x volume
+must fall within the confirmed limit with headroom to spare.
+
+If the limit cannot accommodate the combined volume, a limit increase must be
+negotiated as part of the contract before the additional registries go live.
+This is a hard dependency — not a nice-to-have.
+
+================================================================================
