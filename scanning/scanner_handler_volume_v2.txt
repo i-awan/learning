@@ -1,0 +1,313 @@
+================================================================================
+SCANNER HANDLER
+Volume Increase Considerations & Risk Mitigations
+Revised — Five Service Architecture (onboarding / launch / cont / poller / findings)
+================================================================================
+Version 2.0  |  Confidential
+--------------------------------------------------------------------------------
+
+
+--------------------------------------------------------------------------------
+1. CONTEXT
+--------------------------------------------------------------------------------
+
+The scanner handler is expanding from scanning internal Nexus images only to
+scanning images across four registries using Wiz as the scanning vendor:
+
+  - Internal Nexus          (existing)
+  - AWS ECR                 (new)
+  - GCP Artifact Registry   (new)
+  - Azure ACR               (new)
+
+The scanner handler pipeline consists of five distinct services:
+
+  onboarding_service        Generates a scan_id (internal — not Wiz's scan id).
+
+  launch_service             Receives scan_id and image details from
+                             onboarding_service. Publishes scan_id to Pub/Sub_1.
+
+  cont_service                Subscribes scan_id from Pub/Sub_1. Launches the
+                             scan to Wiz. Publishes scan_id to Pub/Sub_2.
+
+  cont_poller                 User-facing endpoint for retrieving findings.
+                             Subscribes scan_id from Pub/Sub_2. Queries Wiz
+                             for findings.
+
+  cont_findings_findings      Takes a point-in-time snapshot of findings to be
+                             consumed by the DB.
+
+This document covers the volume considerations and risk mitigations required
+across all five services as scan volume increases approximately 3-4x from the
+addition of the three new cloud registries.
+
+
+--------------------------------------------------------------------------------
+2. VOLUME IMPACT
+--------------------------------------------------------------------------------
+
+  Before (Nexus only):                After (all four registries):
+    One source, one registry            Potentially 3-4x scan volume
+    Known, bounded volume               Three additional cloud registries
+    Single burst pattern                Different burst patterns per cloud
+                                         CI/CD pipelines from multiple
+                                         environments, overlapping bursts
+
+  Estimated volume uplift:
+    Daily scans (Nexus only):     ~13,000
+    Daily scans (all registries): ~50,000
+    Peak rate increase:           ~3-4x
+
+
+--------------------------------------------------------------------------------
+3. WHERE THE VOLUME PRESSURE LANDS
+--------------------------------------------------------------------------------
+
+  onboarding_service:
+    Hit once per scan request. Lightweight — generates scan_id only.
+    Pressure: inbound request rate from four registries.
+
+  launch_service:
+    Hit once per scan request. Publishes to Pub/Sub_1.
+    Pressure: same inbound rate as onboarding, plus Pub/Sub_1
+    publish reliability.
+
+  cont_service:
+    Subscribes Pub/Sub_1. Makes ONE call to Wiz per scan_id — the trigger call.
+    Pressure: Wiz submission rate limit, Pub/Sub_1 queue depth if it
+    falls behind.
+
+  cont_poller:
+    Subscribes Pub/Sub_2. ALSO a user-facing endpoint for findings retrieval.
+    Makes REPEATED calls to Wiz per scan_id — polling for status until complete.
+    Pressure: HIGHEST Wiz API call volume of all services. Wiz is queried
+    once for submission but many times per scan during polling.
+
+  cont_findings_findings:
+    Takes a point-in-time snapshot. Writes to DB.
+    Pressure: DB write volume and snapshot frequency.
+
+  CRITICAL FINDING: cont_poller carries by far the most load. It is doing
+  double duty as both the Pub/Sub_2 consumer AND a directly user-callable
+  endpoint, and it makes the most Wiz API calls overall because polling
+  happens repeatedly per scan rather than once.
+
+
+--------------------------------------------------------------------------------
+4. ONBOARDING_SERVICE — CONSIDERATIONS AND ACTIONS
+--------------------------------------------------------------------------------
+
+  CONSIDERATION:
+  First point of contact for all four registries. Needs to absorb burst
+  without becoming a bottleneck for everything downstream.
+
+  ACTIONS:
+    - Per-source rate limiting (separate token bucket per registry)
+    - Stateless and lightweight — scale horizontally with ease
+    - HPA on CPU utilisation, low threshold (60%) since this is the first
+      gate — scale early before pressure builds downstream
+
+
+--------------------------------------------------------------------------------
+5. LAUNCH_SERVICE — CONSIDERATIONS AND ACTIONS
+--------------------------------------------------------------------------------
+
+  CONSIDERATION:
+  Publishes scan_id and image details to Pub/Sub_1. If this publish fails,
+  the scan_id exists but never enters the downstream pipeline.
+
+  ACTIONS:
+    - Durability pattern: write scan_id state to Firestore BEFORE publishing
+      to Pub/Sub_1
+    - Reconciler CronJob detects scan_ids that exist in Firestore but never
+      appeared in Pub/Sub_1, and requeues them
+    - HPA on CPU utilisation, similar profile to onboarding_service
+
+
+--------------------------------------------------------------------------------
+6. CONT_SERVICE — CONSIDERATIONS AND ACTIONS
+--------------------------------------------------------------------------------
+
+  CONSIDERATION:
+  This is where the actual Wiz submission rate limit pressure sits — one call
+  per scan_id. At 4x volume this is the service most directly exposed to
+  Wiz's tenant rate limit.
+
+  ACTIONS:
+    - Token bucket tuned to Wiz submission rate limit
+    - Per-registry-source separation if Pub/Sub_1 is split by source
+    - Circuit breaker on Wiz submission calls specifically
+    - Idempotency check before submitting — if scan_id already has a
+      wiz_scan_id recorded, skip resubmission. This handles message
+      redelivery after a cont_service pod crash without double-submitting
+      to Wiz.
+
+
+--------------------------------------------------------------------------------
+7. CONT_POLLER — THE CRITICAL SERVICE
+--------------------------------------------------------------------------------
+
+  This is the highest risk service in the entire pipeline for three
+  compounding reasons.
+
+7a. Dual Responsibility
+------------------------
+
+  It is both a Pub/Sub_2 consumer AND a user-facing GET endpoint. Two very
+  different load patterns hit the same service simultaneously.
+
+7b. Repeated Wiz Calls Per Scan
+----------------------------------
+
+  Unlike cont_service which calls Wiz once, cont_poller may call Wiz multiple
+  times per scan_id until status is COMPLETED. At 4x scan volume this is not
+  simply 4x the Wiz calls — it could be significantly higher depending on
+  poll frequency and average scan duration.
+
+7c. User-Facing Means It Cannot Fail Silently
+------------------------------------------------
+
+  If this service is overwhelmed, users polling for findings get errors or
+  timeouts directly. Unlike the other services, backpressure here is visible
+  to the caller immediately.
+
+
+KEY ACTION — SPLIT THE SERVICE INTO TWO LOGICAL CONCERNS
+----------------------------------------------------------
+
+  Even if deployed as the same codebase, split cont_poller's responsibilities:
+
+    Internal poller loop:
+      - Subscribes Pub/Sub_2
+      - Polls Wiz on a fixed interval
+      - Writes status updates to Firestore
+      - This is where Wiz rate limit consumption happens
+
+    External findings endpoint:
+      - GET /scan/{scan_id}/findings
+      - Reads from Firestore ONLY
+      - NEVER calls Wiz directly on a user request
+      - This decouples user traffic from Wiz rate limit entirely
+
+  THIS IS THE SINGLE MOST IMPORTANT ACTION IN THIS DOCUMENT.
+
+  Without this split, a burst of users polling the findings endpoint directly
+  hits Wiz, competing with the internal poller loop for the same rate limit
+  budget. User-facing latency becomes coupled to Wiz's behaviour, meaning a
+  Wiz slowdown directly degrades the user experience rather than being
+  absorbed internally.
+
+
+OTHER ACTIONS FOR CONT_POLLER
+--------------------------------
+
+  - Separate token bucket for the internal poller's Wiz calls, sized as a
+    defined portion of the total Wiz rate limit budget, independent from
+    cont_service's submission budget
+
+  - Backoff polling interval based on scan age:
+      First 60s of a scan:    poll every 5s   (likely still running)
+      60s - 180s:             poll every 15s  (likely close to done)
+      180s+:                  poll every 30s  (long-running, reduce load)
+
+    This naturally reduces Wiz call volume for long-running scans without
+    sacrificing responsiveness for fast ones.
+
+  - HPA scaling on Pub/Sub_2 undelivered message count for the poller loop,
+    separately from request rate scaling for the external findings endpoint
+    if split into two deployments
+
+
+--------------------------------------------------------------------------------
+8. CONT_FINDINGS_FINDINGS — CONSIDERATIONS AND ACTIONS
+--------------------------------------------------------------------------------
+
+  CONSIDERATION:
+  Takes a point-in-time snapshot for DB consumption. The volume concern here
+  is less about Wiz and more about write throughput to the database and how
+  frequently snapshots are taken.
+
+  ACTIONS:
+    - Confirm snapshot frequency and whether it is triggered per status
+      change or on a fixed schedule
+    - If triggered per status change at 4x scan volume, DB write volume
+      increases proportionally — confirm the target DB can absorb this
+      write rate
+    - Consider batching writes rather than one write per snapshot event,
+      particularly if the target DB benefits from batch inserts
+      (e.g. BigQuery prefers batched writes over high-frequency
+      single-row inserts)
+    - If point-in-time means periodic full snapshots rather than
+      incremental updates, confirm the snapshot job scales independently
+      and does not block cont_poller's other work
+
+
+--------------------------------------------------------------------------------
+9. PUB/SUB_1 VS PUB/SUB_2 — DIFFERENT CONCERNS
+--------------------------------------------------------------------------------
+
+  Pub/Sub_1 (onboarding/launch → cont_service):
+    One message per scan submission
+    Volume = scan request rate
+    Concern: cont_service keeping pace with submissions
+
+  Pub/Sub_2 (cont_service → cont_poller):
+    One message per scan submission
+    BUT the message may need to be reprocessed multiple times until the
+    scan reaches COMPLETED
+    Concern: whether messages are acked only on COMPLETED, or nacked and
+    redelivered for ongoing polling — this affects queue depth metrics
+    very differently than Pub/Sub_1
+
+  ACTION REQUIRED — CLARIFY ACK/NACK PATTERN ON PUB/SUB_2:
+    Determine whether cont_poller acks the Pub/Sub_2 message immediately
+    and manages subsequent polling internally via a separate loop, or
+    whether it nacks and redelivers the same message repeatedly until the
+    scan completes. The second pattern makes Pub/Sub_2 queue depth metrics
+    misleading, since the same scan_id reappearing repeatedly looks
+    identical to new submissions piling up. This must be clarified before
+    alerting thresholds are set on Pub/Sub_2 queue depth.
+
+
+--------------------------------------------------------------------------------
+10. SUMMARY OF ACTIONS
+--------------------------------------------------------------------------------
+
+  SERVICE                  ACTION                                    PRIORITY
+  ------------------------  ----------------------------------------  ----------
+  onboarding_service         Per-source rate limiting, low HPA        IMMEDIATE
+                             threshold
+
+  launch_service              Firestore-first durability before       IMMEDIATE
+                             Pub/Sub_1 publish
+
+  cont_service                 Token bucket tuned to Wiz submission     IMMEDIATE
+                             limit, idempotency check
+
+  cont_poller                   SPLIT internal poll loop from external  IMMEDIATE
+                             findings endpoint
+
+  cont_poller                   Separate token bucket for Wiz polling   IMMEDIATE
+                             calls
+
+  cont_poller                   Age-based backoff polling interval      HIGH
+
+  cont_findings_findings        Confirm and tune DB write throughput     HIGH
+
+  Pub/Sub_2                  Clarify ack/nack pattern — affects        HIGH
+                             queue depth interpretation
+
+  All services                Load test at 2x peak across all four      MEDIUM
+                             registries
+
+
+================================================================================
+KEY TAKEAWAY
+================================================================================
+
+cont_poller is the highest-risk service because it carries both the repeated
+Wiz polling load and direct user traffic simultaneously. The single most
+important action is splitting it so the external findings endpoint only ever
+reads from Firestore and never calls Wiz directly on a user request — fully
+decoupling user-facing latency from Wiz's rate limit and behaviour.
+
+================================================================================
