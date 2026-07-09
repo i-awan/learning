@@ -1,0 +1,292 @@
+SCANNER HANDLER
+Volume Increase — Considerations & Risk Mitigations
+Version 2.0  |  Confidential
+
+
+1. Context
+The scanner handler is expanding from scanning internal Nexus images only to scanning images across two registries using Wiz as the scanning vendor. The five-service pipeline — onboarding_service, launch_service, cont_service, cont_poller, and cont_findings_findings — must be assessed for capacity and resilience under the increased load.
+
+
+
+Nexus images are scanned by Wiz Outpost Lite running on-premises. ECR images are scanned by Wiz SaaS — Wiz manages its own scaling internally for this path. The volume and resilience concerns in this document therefore apply differently depending on the scanning path.
+
+2. Five-Service Pipeline
+Each service has a distinct role and a distinct volume pressure:
+
+
+
+3. Volume Sizing
+3.1 Nexus — Outpost Lite Path
+Outpost Lite scans Nexus images on-premises with no KEDA autoscaling available. Fixed replicas must be sized for peak concurrent demand.
+
+
+
+3.2 AWS ECR — Wiz SaaS Path
+ECR images are scanned by Wiz SaaS. Wiz manages scanning capacity internally. The scanner handler's concern for this path is the rate at which cont_service submits scan requests to the Wiz API and how cont_poller polls for findings.
+
+
+
+4. Key Considerations Per Service
+4.1 onboarding_service
+Implement per-source rate limiting — separate token bucket per registry
+HPA on CPU utilisation at 60% threshold — scale early before downstream pressure builds
+Stateless and lightweight — should scale horizontally without state management concerns
+
+4.2 launch_service
+Write scan_id to Firestore BEFORE publishing to Pub/Sub_1 — durability guarantee
+Reconciler CronJob detects scan_ids in Firestore that never reached Pub/Sub_1 and requeues
+HPA on CPU utilisation — similar profile to onboarding_service
+
+4.3 cont_service
+Token bucket tuned to Wiz submission rate limit — recalculate for combined 9,500 scans/day
+Idempotency check before each Wiz submission — prevents duplicate scans on pod crash and redelivery
+Circuit breaker on Wiz submission calls — tune to open faster at combined volume (3 consecutive failures not 5)
+Concurrency gate ceiling must match Outpost Lite fixed replica count — 50 for Nexus path
+
+4.4 cont_poller — Critical Service
+
+
+
+MOST IMPORTANT ACTION: split the internal poll loop from the external findings endpoint
+External GET /findings/{scan_id} endpoint must read from Firestore ONLY — never call Wiz directly on a user request
+Internal poller loop subscribes Pub/Sub_2 and polls Wiz independently of user traffic
+Separate token bucket for Wiz polling calls — sized as 40% of total Wiz rate limit budget
+cont_service submission budget — sized as 60% of total Wiz rate limit budget
+Age-based backoff polling interval to reduce Wiz call volume for long-running scans:
+First 60s → poll every 5s  |  60s-180s → poll every 15s  |  180s+ → poll every 30s
+HPA on Pub/Sub_2 undelivered message count for the internal poller
+Clarify ack/nack pattern on Pub/Sub_2 — determines whether queue depth metrics are meaningful for alerting
+
+4.5 cont_findings_findings
+Confirm snapshot trigger — per status change or fixed schedule
+At 9,500 scans/day, per-change triggers produce significantly higher DB write volume — confirm target DB can absorb
+Consider batching DB writes — BigQuery in particular benefits from batched over single-row inserts
+
+5. Outpost Lite — Fixed Replicas (No KEDA)
+KEDA has not been approved for the bank environment. Outpost Lite therefore runs at a fixed replica count with no automatic scale-up or scale-to-zero capability. The following approach is recommended.
+
+5.1 Replica Strategy
+Size for peak concurrent demand (Option A). Banks prioritise reliability over resource cost. Running at peak capacity permanently ensures no scan is delayed due to insufficient pods. The idle resource cost during quiet periods is predictable and budgetable.
+
+
+
+5.2 Concurrency Gate Alignment
+Without KEDA the concurrency gate in cont_service is the only mechanism preventing more scan jobs being submitted to Wiz than Outpost Lite has pods to handle. The gate ceiling must match the fixed replica count.
+
+
+
+5.3 Growth Process
+Without autoscaling, volume growth requires a manual replica count review. Alert thresholds should trigger an early review rather than waiting for a scheduled cycle.
+
+Quarterly scheduled review of Nexus scan volume vs replica count
+Alert-triggered early review if Pub/Sub_1 queue depth consistently exceeds 100 undelivered messages
+Alert-triggered early review if concurrency gate fires on more than 20% of submissions
+Review action: recalculate concurrent pods, update replicas, update gate ceiling, update node pool if needed
+
+5.4 Wiz Commitment Required
+
+
+6. Summary of Actions
+
+
+
+
+
+The single most important action is splitting cont_poller so the external findings endpoint reads from Firestore only and never calls Wiz directly — decoupling user-facing latency from Wiz rate limit behaviour entirely.
+
+
+
+token buckets 
+
+
+
+The Simple Analogy
+Imagine a physical bucket that slowly fills with tokens at a fixed rate. Every time you want to send a request to Wiz you must first take a token out of the bucket. If the bucket is empty you wait until a token appears before sending.
+Bucket refills at:   e.g. 10 tokens per minute
+Bucket capacity:     e.g. 15 tokens max
+
+You need 1 token to send 1 request to Wiz
+
+Why It Exists in the Scanner Handler
+Wiz imposes a rate limit on your tenant — say 100 API calls per minute. If your services send requests faster than that limit Wiz returns errors and requests get dropped or delayed.
+Without a token bucket:
+9am — CI/CD pipelines fire simultaneously
+500 scan requests arrive in 60 seconds
+cont_service sends all 500 to Wiz immediately
+Wiz rate limit hit after request 100
+Remaining 400 requests → error from Wiz
+Jobs lost or stuck
+With a token bucket:
+9am — CI/CD pipelines fire simultaneously
+500 scan requests arrive in 60 seconds
+cont_service takes one token per request
+Bucket empties after 100 requests
+cont_service waits for tokens to refill
+Drip-feeds remaining 400 to Wiz safely
+Wiz never sees the spike
+Zero errors
+
+Where It Appears in the Scanner Handler
+There are two separate token buckets mentioned in the document:
+Token bucket 1 — cont_service:
+  Controls how fast scan requests
+  are submitted to Wiz
+  60% of the total Wiz rate limit
+  One token consumed per scan submission
+
+Token bucket 2 — cont_poller:
+  Controls how fast status polling
+  calls are made to Wiz
+  40% of the total Wiz rate limit
+  One token consumed per poll query
+They are separate because cont_service and cont_poller both call Wiz but for different purposes. Without separation one service can consume the entire rate limit and starve the other:
+Without split buckets:
+  cont_poller floods Wiz with polling calls
+  cont_service cannot submit new scans
+  New scan requests back up in Pub/Sub_1
+  Pipeline stalls
+
+With split buckets:
+  cont_poller is capped at 40% of the limit
+  cont_service always has 60% available
+  Both services operate independently
+  Neither can starve the other
+
+In Practice — What It Looks Like in Code
+pythonimport time
+
+class TokenBucket:
+
+    def __init__(self, rate_per_minute: int, capacity: int):
+        self._rate      = rate_per_minute / 60   # tokens per second
+        self._capacity  = capacity
+        self._tokens    = capacity               # start full
+        self._last_refill = time.monotonic()
+
+    def acquire(self) -> None:
+        """
+        Block until a token is available.
+        Caller waits here — never rejects.
+        """
+        while True:
+            self._refill()
+            if self._tokens >= 1:
+                self._tokens -= 1
+                return
+            time.sleep(0.1)
+
+    def _refill(self) -> None:
+        now     = time.monotonic()
+        elapsed = now - self._last_refill
+        self._tokens = min(
+            self._capacity,
+            self._tokens + elapsed * self._rate
+        )
+        self._last_refill = now
+
+
+# Wiz confirmed rate limit: 100 calls per minute
+# Split 60/40 between submission and polling
+
+submission_bucket = TokenBucket(
+    rate_per_minute = 60,   # 60% of 100
+    capacity        = 10
+)
+
+polling_bucket = TokenBucket(
+    rate_per_minute = 40,   # 40% of 100
+    capacity        = 10
+)
+
+# cont_service uses this before calling Wiz
+def submit_scan_to_wiz(scan_id, image_uri):
+    submission_bucket.acquire()   # wait for token
+    wiz_client.trigger_scan(image_uri)
+
+# cont_poller uses this before querying Wiz
+def poll_wiz_for_status(wiz_scan_id):
+    polling_bucket.acquire()      # wait for token
+    return wiz_client.get_status(wiz_scan_id)
+
+One Line Summary
+
+A token bucket is a counter that refills at a fixed rate — you spend one token per Wiz API call, and if the counter hits zero you wait. In the scanner handler two separate buckets ensure cont_service and cont_poller each get a guaranteed share of the Wiz rate limit and neither can starve the other.
+ok should wiz provide token buckets or is that on the tenant to create themThe token bucket is entirely on your side — Wiz does not provide one. Here is why.
+
+What Wiz Provides
+Wiz provides a rate limit — a hard ceiling on how many API calls your tenant can make per minute. When you exceed it Wiz returns an error:
+Wiz's responsibility:
+  Define the rate limit
+  Enforce it server-side
+  Return an error when exceeded
+  e.g. HTTP 200 with errors: [RATE_LIMITED]
+
+That is all Wiz does.
+
+What You Provide
+Everything that prevents you from hitting that ceiling is your responsibility:
+Your responsibility:
+  Know what the rate limit is     ← ask Wiz to confirm it
+  Build something that respects it ← token bucket
+  Handle the error if you hit it  ← circuit breaker + nack
+  Monitor how close you are       ← alerting metrics
+The token bucket is your self-imposed control. It is a client-side mechanism that keeps you safely below Wiz's server-side limit.
+
+
+
+
+The Analogy
+Wiz:   sets a speed limit on the road
+       puts up a sign saying 60mph
+       issues a fine if you go faster
+
+You:   fit a speed limiter in your car
+       that prevents you exceeding 55mph
+       so you never trigger the fine
+
+The speed limit is Wiz's.
+The speed limiter is yours.
+
+Why You Cannot Rely on Wiz's Error Alone
+You might think — why build a token bucket at all? Just handle the error when Wiz returns it.
+The problem is what happens at the queue level:
+Without token bucket — rely on Wiz error:
+
+  500 requests sent simultaneously
+          ↓
+  Wiz returns RATE_LIMITED on 400 of them
+          ↓
+  cont_service nacks 400 messages
+          ↓
+  Pub/Sub redelivers 400 messages immediately
+          ↓
+  cont_service retries all 400 again
+          ↓
+  Wiz returns RATE_LIMITED again
+          ↓
+  Tight retry loop consuming CPU
+  hammering Wiz with failing requests
+  going nowhere
+With a token bucket this never happens — requests are drip-fed to Wiz at a safe rate and the error is never triggered in the first place.
+
+
+
+What to Ask Wiz For
+Wiz does not give you a token bucket but they should give you the number you need to configure yours:
+Ask Wiz:
+  What is our confirmed per-tenant
+  rate limit for GraphQL API calls?
+
+  Is it:
+    Per minute?
+    Per second?
+    Separate limits for mutations vs queries?
+    (triggerImageScan vs scanJob status polling)
+
+That number is what you set your
+token bucket refill rate to.
+
+One Line Summary
+
+Wiz provides the rate limit — the ceiling you must stay under. You build the token bucket — the client-side control that ensures you never reach that ceiling. Relying on Wiz's error response alone is not sufficient because it creates a retry storm that hammers Wiz with failing requests rather than smoothly controlling the flow.
+can you add this token bucket example to the docRan 4 commandsRan 4 commandsClaude's response was interrupted.
