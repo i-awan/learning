@@ -290,3 +290,106 @@ One Line Summary
 
 Wiz provides the rate limit — the ceiling you must stay under. You build the token bucket — the client-side control that ensures you never reach that ceiling. Relying on Wiz's error response alone is not sufficient because it creates a retry storm that hammers Wiz with failing requests rather than smoothly controlling the flow.
 can you add this token bucket example to the docRan 4 commandsRan 4 commandsClaude's response was interrupted.
+
+
+
+KEDA 
+
+
+Without KEDA:
+  cont_scan: fixed 2 replicas
+  500 messages arrive in Pub/Sub_1
+  2 pods process at fixed rate
+  Queue backs up
+
+With KEDA:
+  cont_scan: 0 → scales up automatically
+  500 messages arrive in Pub/Sub_1
+  KEDA sees queue depth spike
+  Spins up 20 pods
+  Queue drains faster
+
+
+How it helps each service: 
+
+
+cont_scan:
+  Scales on Pub/Sub_1 depth
+  More pods = faster submission rate to Wiz
+  Queue drains quicker under burst
+  Scales back to zero when idle
+
+cont_poller:
+  Scales on Pub/Sub_2 depth
+  More pods = more concurrent Wiz status polls
+  Findings retrieved faster
+  Scales back when scans complete
+
+onboarding_service:
+  Could scale on inbound request rate
+  More pods = more internal_ids generated
+  Handles burst from multiple registries
+
+launch_service:
+  Could scale on request rate
+  More pods = faster Pub/Sub_1 publishing
+
+
+
+
+The Critical Distinction — KEDA Helps Your Throughput, Not Wiz's
+
+
+KEDA scales YOUR pods
+        ↓
+More cont_scan pods means
+faster submission rate to Wiz
+        ↓
+BUT Wiz's rate limit is fixed
+regardless of how many pods you have
+        ↓
+10 cont_scan pods × 50 requests each
+= 500 requests hitting Wiz simultaneously
+= same rate limit problem
+= same rejection or queuing behaviour
+
+
+KEDA and the token bucket solve different problems:
+
+
+KEDA:           scales your processing capacity
+                more pods to handle more messages
+                speeds up YOUR throughput
+
+Token bucket:   controls the rate at which
+                you call Wiz
+                protects against Wiz rate limit
+                regardless of pod count
+
+
+
+They Are Complementary Not Alternatives
+
+
+
+Without KEDA, with token bucket:
+  2 fixed cont_scan pods
+  each respecting Wiz rate limit
+  Queue drains slowly under burst
+  Eventually processes everything
+  Wiz protected but throughput limited
+
+With KEDA, without token bucket:
+  20 cont_scan pods spin up
+  all 20 hammer Wiz simultaneously
+  Rate limit hit 20x harder
+  Rejection storm worse than before
+  More pods made the Wiz problem worse
+
+With KEDA AND token bucket:
+  20 cont_scan pods spin up
+  All share a single token bucket
+  Combined submission rate still
+  respects Wiz limit
+  Queue drains fast AND Wiz protected
+  Best of both worlds
