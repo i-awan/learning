@@ -1,0 +1,364 @@
+---
+title: Why package and version Helm charts in Artifactory
+description: The case for treating a Helm chart as a versioned, immutable artifact in Artifactory rather than running helm install by hand — immutability, promotion, rollback, and supply-chain control, with PostgreSQL as the worked example.
+sidebar:
+  order: 3
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+import YouTube from '../../../components/YouTube.astro';
+
+The gap between `helm install` run by hand and a *packaged, versioned* chart
+isn't tooling polish — it's whether your deployments are reproducible, auditable,
+and safely reversible. Publishing a chart as an immutable artifact in Artifactory
+turns "works on my machine" into a fixed thing you can promote, pin, and roll back
+to. This guide is about those benefits specifically; PostgreSQL is just the chart
+we'll use to make them concrete, but every point applies to any chart.
+
+{/* Placeholder video — swap in your real YouTube ID once recorded. */}
+<YouTube id="dQw4w9WgXcQ" title="Packaging and versioning Helm charts in Artifactory" />
+
+## The core shift: a chart version becomes an artifact
+
+When you run Helm directly, the deployed state depends on who ran what, from
+where, with which values — there's no immutable record and no guaranteed rollback
+target. Package the chart instead and `postgresql-1.0.0` becomes a fixed `.tgz`
+(or OCI artifact) sitting in Artifactory. Once published it never changes.
+Everything below flows from that single property.
+
+| | Running directly | Packaged & versioned |
+|---|---|---|
+| Source of truth | A folder or branch | A signed, versioned `.tgz` / OCI artifact |
+| Deploy | `helm install` by hand | ArgoCD syncs a pinned version |
+| Reproducibility | "Works on my machine" | Same artifact promoted dev → test → prod |
+| Rollback | Re-run old commands and hope | Re-point to the previous version, sync |
+| Audit | Shell history, if that | Full artifact history + Xray scan results |
+
+## What this actually buys you
+
+### Reproducibility and change safety
+
+**Immutability and reproducibility.** A published version is frozen. Anyone who
+pulls `postgresql-1.0.0` — a colleague, a pipeline, a different cluster — gets
+byte-for-byte the same templates. The drift that comes from someone tweaking a
+local `templates/` folder simply can't happen, because the artifact is the source
+of truth, not a working copy.
+
+**Semantic versioning and an auditable history.** The version number carries
+meaning: a major bump signals a breaking change, a minor a new capability, a patch
+a fix. Artifactory retains every version, so you get a linear, readable history of
+how the Postgres chart evolved — not a reconstruction from shell history.
+
+**Safe, predictable rollback.** Because every version is kept, rolling back is
+"deploy the previous version," not "reconstruct last month's commands." The
+rollback target always exists in Artifactory and is *exactly* what was previously
+tested.
+
+### Delivery and GitOps fit
+
+**Environment promotion.** The identical, tested artifact moves dev → test → prod.
+You promote `postgresql-1.0.0` rather than rebuilding it per environment, so you
+genuinely ship what you tested. Artifactory's repository model (and promotion
+between repos) is built for exactly this hand-off.
+
+**A single source of truth for GitOps.** ArgoCD references a *pinned* chart
+version, so the desired state is declarative and continuously reconciled — see
+[GitOps with ArgoCD](/gitops/argocd-getting-started/). The cluster follows the
+artifact; the artifact doesn't follow whoever last ran a command.
+
+**Separation of build and deploy.** Packaging happens once, in CI. Deployment
+becomes a lightweight, repeatable pull of a known version. The heavy, error-prone
+work (lint, template, dependency resolution, scanning) is done and captured before
+anything touches a cluster.
+
+### Governance and supply chain — Artifactory's real strengths
+
+**Access control and governance.** Artifactory RBAC and access tokens let you
+separate *publish* from *consume*: humans can pull, but only CI (via a service
+account token) can push to the release repo. That one control eliminates most
+"who deployed what" incidents.
+
+**Supply-chain security.** Charts and the images they reference can be scanned
+with JFrog Xray, signed, and given provenance. For a database like Postgres —
+where the image is doing the real work — a scan gate on the artifact is where you
+catch a vulnerable base image before it reaches production, not after.
+
+**Dependency locking.** Subchart dependencies are resolved and locked at *package*
+time via `Chart.lock`, not re-resolved at deploy time. So the version you tested
+includes the exact subchart versions you tested — no surprise upgrades sneaking in
+at `helm install`.
+
+<Aside type="tip">
+The through-line: each benefit comes back to the artifact being **immutable and
+addressable by version**. Immutability gives reproducibility and rollback;
+addressability gives promotion, GitOps pinning, and a scan/sign target. Artifactory
+is where those two properties live.
+</Aside>
+
+## Putting it into practice
+
+### What you need first
+
+Helm 3.8+ (OCI support is GA), the `oc` CLI with cluster access, and an Artifactory
+repository to hold charts — an **OCI local repo is the cleaner choice** over a
+classic Helm repo that serves an `index.yaml`. Authenticate with an Artifactory
+**access token bound to a service account**, never a personal password or a
+deprecated API key. If you'll consume through GitOps, you also need the OpenShift
+GitOps (ArgoCD) operator installed.
+
+### Package and publish
+
+<Steps>
+
+1. **Version the chart** in `Chart.yaml`. The two version fields do different jobs:
+
+   ```yaml
+   apiVersion: v2
+   name: postgresql
+   type: application
+   version: 1.0.0        # the CHART's SemVer — what you pin in ArgoCD
+   appVersion: "16.3"    # the PostgreSQL release shipped — metadata only
+   ```
+
+2. **Resolve and lock dependencies** so the package is deterministic (writes
+   `Chart.lock`, pinning subchart versions):
+
+   ```bash
+   helm dependency update ./postgresql
+   ```
+
+3. **Validate before you publish** — cheap here, expensive in production:
+
+   ```bash
+   helm lint ./postgresql
+   helm template ./postgresql --values ./postgresql/values.yaml | oc apply --dry-run=server -f -
+   ```
+
+   In CI, add `kubeconform` and optionally `helm unittest` to catch schema and
+   logic regressions before an artifact is ever published.
+
+4. **Package** to a versioned tarball:
+
+   ```bash
+   helm package ./postgresql --version 1.0.0 --app-version 16.3
+   # -> postgresql-1.0.0.tgz
+   ```
+
+5. **Publish to Artifactory.** OCI is the recommended path:
+
+   ```bash
+   helm registry login mycompany.jfrog.io -u svc-helm-ci -p "$ARTIFACTORY_TOKEN"
+   helm push postgresql-1.0.0.tgz oci://mycompany.jfrog.io/helm-oci-local
+   ```
+
+   For a classic (index.yaml) repo instead, upload with the JFrog CLI —
+   `jf rt upload postgresql-1.0.0.tgz helm-local/` — and Artifactory regenerates
+   the `index.yaml` automatically.
+
+6. **Verify** it landed:
+
+   ```bash
+   # OCI
+   helm show chart oci://mycompany.jfrog.io/helm-oci-local/postgresql --version 1.0.0
+   # Classic
+   helm search repo artifactory/postgresql --versions
+   ```
+
+</Steps>
+
+<Aside type="tip">
+**`version` vs `appVersion`** trips people up. `version` is the chart's own SemVer
+and is what you pin in ArgoCD. `appVersion` just records which PostgreSQL release
+is packaged — it's metadata. They move independently: a templating fix bumps
+`version` but not `appVersion`.
+</Aside>
+
+### Consume it through GitOps
+
+Register the Artifactory credentials once for ArgoCD's repo-server — the labelled
+repository secret pattern from [private Helm
+repos](/gitops/argocd-private-helm-repos/), with `enableOCI: "true"`:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: artifactory-helm-oci
+  namespace: openshift-gitops
+  labels:
+    argocd.argoproj.io/secret-type: repository
+stringData:
+  name: artifactory-oci
+  url: mycompany.jfrog.io/helm-oci-local
+  type: helm
+  enableOCI: "true"
+  username: svc-argocd
+  password: <access-token>
+```
+
+Then pin an exact version in the `Application`:
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: postgresql
+  namespace: openshift-gitops
+spec:
+  project: default
+  source:
+    repoURL: mycompany.jfrog.io/helm-oci-local
+    chart: postgresql
+    targetRevision: 1.0.0          # pin exactly — no ranges in prod
+    helm:
+      values: |
+        auth:
+          existingSecret: postgresql-creds
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: database
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+```
+
+Which `source` you point at here decides what your source of truth actually *is* —
+and this is the crux of the whole argument. An ArgoCD `Application` can fetch its
+chart two ways:
+
+- **From a Git path holding raw templates** — `repoURL: github.com/your-org/charts`,
+  `path: charts/postgresql`, `targetRevision: main`. ArgoCD renders whatever
+  templates sit at that ref right now. The truth is a directory on a branch: it can
+  shift under you, subchart dependencies resolve at render time, and nothing
+  packaged, versioned, or scanned sits behind it.
+- **From the Artifactory package** — `chart: postgresql`, `targetRevision: 1.0.0`,
+  as above. ArgoCD pulls one specific immutable version, so the **packaged chart in
+  Artifactory becomes the deployed source of truth** — the exact artifact that was
+  linted, tested, dependency-locked, scanned by Xray, and promoted through your
+  environments.
+
+The nuance worth keeping straight: the `Application` manifest itself — the *which
+version is deployed* decision — still lives in your GitOps Git repo. What packaging
+changes is where the *chart content* comes from: an immutable, versioned artifact
+in Artifactory instead of a mutable templates folder in a source repo. That's the
+difference between "deploy whatever's on the branch right now" and "deploy
+`postgresql-1.0.0`, the artifact we actually tested" — and it's where every benefit
+in this guide comes from.
+
+### Which `source` you pick decides what the source of truth is
+
+This is the packaging payoff made concrete, and it's easy to miss. An ArgoCD
+`Application` can source a Helm chart two different ways, and they mean very
+different things for reproducibility:
+
+- **A template folder in Git** — `repoURL` points at a Git repo and `path` at a
+  folder of raw chart templates, tracked by a branch:
+
+  ```yaml
+  source:
+    repoURL: https://git.example.com/platform/charts.git
+    path: charts/postgresql
+    targetRevision: main
+  ```
+
+  Here the source of truth is whatever sits on that branch at sync time. Templates
+  can change under you, subchart dependencies are re-resolved at render, and "what's
+  actually deployed" drifts unless you are rigorous with tags.
+
+- **A packaged chart in Artifactory** — `repoURL` points at the registry and you
+  name a `chart` plus an exact `targetRevision` (the form shown above):
+
+  ```yaml
+  source:
+    repoURL: mycompany.jfrog.io/helm-oci-local
+    chart: postgresql
+    targetRevision: 1.0.0
+  ```
+
+  Now the source of truth is the **immutable, versioned artifact in Artifactory**.
+  ArgoCD renders exactly `postgresql-1.0.0` — the same bytes that were linted,
+  scanned and tested, with subchart versions already locked in `Chart.lock` at
+  package time.
+
+Pointing ArgoCD at the Artifactory package rather than a template folder in Git is
+precisely what makes the *tested artifact* — not a branch's current state — the
+thing the cluster continuously reconciles to. Every benefit in the section above
+depends on this one choice.
+
+<Aside type="caution">
+Two gotchas that cost afternoons. **`repoURL` must match the registered repository
+URL exactly**, or ArgoCD won't apply the credentials and the sync fails on auth.
+And **two separate credentials, one registry**: the repository secret lets ArgoCD
+pull the *chart*; when pods start, the kubelet pulls the *PostgreSQL image*, which
+needs an `imagePullSecret` in the target namespace pointing at your Artifactory
+Docker registry. A chart can sync perfectly and the pods still fail with
+`ImagePullBackOff`.
+</Aside>
+
+### Automate publishing in CI
+
+Packaging and publishing should be a pipeline step (Tekton/OpenShift Pipelines,
+GitLab CI, etc.), never a manual action — that's what makes "only CI publishes"
+real:
+
+```bash
+# on a tagged release commit
+VERSION="${GIT_TAG#v}"                     # v1.0.0 -> 1.0.0
+helm lint ./postgresql
+helm dependency update ./postgresql
+helm package ./postgresql --version "$VERSION"
+helm registry login mycompany.jfrog.io -u "$CI_USER" -p "$ARTIFACTORY_TOKEN"
+helm push "postgresql-${VERSION}.tgz" oci://mycompany.jfrog.io/helm-oci-local
+```
+
+Bumping `targetRevision` in the GitOps repo (by hand or via an automated PR) then
+triggers the deployment.
+
+## Versioning strategy
+
+| Change | Bump | Example |
+|---|---|---|
+| Breaking template/values change | MAJOR | 1.4.2 → 2.0.0 |
+| New backwards-compatible capability | MINOR | 1.4.2 → 1.5.0 |
+| Fix, no interface change | PATCH | 1.4.2 → 1.4.3 |
+| New PostgreSQL image only | PATCH/MINOR + `appVersion` | "16.3" → "16.4" |
+
+Three rules make the benefits real rather than aspirational: **never overwrite a
+published version** (configure the repo to reject re-pushes — immutability is the
+whole point); **only CI publishes** (humans don't push to the release repo); and
+**pin exact versions in prod**, reserving ranges, if ever, for lower environments.
+
+Rollback then falls out for free and is *not* `helm rollback`: set `targetRevision`
+back to the last known-good version, commit, and ArgoCD reconciles to that retained
+artifact. Because every version is kept in Artifactory, the target always exists
+and is exactly what was previously tested.
+
+## The OpenShift angle
+
+None of this changes the packaging story, but the chart you publish has to be
+`restricted-v2`-clean or the pod won't schedule — the same constraint from [SCCs
+explained](/security/security-context-constraints/). In practice the image must
+run as an arbitrary, namespace-assigned UID (group-writable data dirs, no hardcoded
+`runAsUser`, not root), and the chart should set a restricted-friendly security
+context:
+
+```yaml
+podSecurityContext:
+  fsGroup: null                 # let OpenShift assign
+  fsGroupChangePolicy: OnRootMismatch
+containerSecurityContext:
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  seccompProfile:
+    type: RuntimeDefault
+```
+
+If a community chart assumes a fixed UID, patch the chart rather than granting a
+broader SCC — it's the cleaner fix and keeps the workload on `restricted-v2`. Also
+confirm the StorageClass supports the access mode the StatefulSet needs. And for a
+long-lived database, weigh whether to package a raw chart at all versus adopting
+the [CloudNativePG operator](/data/postgres-on-openshift/), which is OpenShift-clean
+by design — the versioning benefits above still apply to whatever you publish.
